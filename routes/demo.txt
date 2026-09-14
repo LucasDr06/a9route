@@ -1,0 +1,20 @@
+# 演示路线：就是用户给的那几条例子（英文标点）
+# 格式：<路程百分比>,<操作>
+#
+#   NN            选路（前一位=图标数量，后一位=选第几个，从左数起）
+#   N:延时:次数:间隔  点氮气（N:0:2:750 = 完美氮气）
+#   D:毫秒        漂移
+#   S:毫秒        关自动驾驶
+#   360           360
+#   A|B           同时执行 A 和 B（尽量别用）
+#
+# 用法：
+#   python -m a9auto race check routes/demo.txt      # 只校验
+#   python -m a9auto race run   routes/demo.txt --dry-run
+#   python -m a9auto race run   routes/demo.txt      # 真跑（需要已经在比赛里）
+
+21,22
+35,N:0:2:750
+40,D:3000
+50,D:100|N:100:1:100
+60,360

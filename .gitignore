@@ -1,0 +1,25 @@
+# ---- 运行产物（随时可删）----
+worktmp/
+output/
+*.pyc
+__pycache__/
+.pytest_cache/
+
+# ---- 本地私有设置（不入库）----
+.local/
+
+# ---- 编辑器 / 系统 ----
+.idea/
+.vscode/
+Thumbs.db
+desktop.ini
+
+# ---- 大文件：**不要**把跑图录像提交进来 ----
+# 录像动辄几十 MB（一次分析还会产出上百张 PNG），所以 fixtures/ 只放
+# 小体积的帧样本（PNG），视频用环境变量 A9ROUTE_VIDEO_DIR 指到外部目录。
+*.mp4
+*.mkv
+*.avi
+*.mov
+*.webm
+!fixtures/**/*.png

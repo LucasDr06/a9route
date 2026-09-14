@@ -1,0 +1,135 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>跑图视频 → 路线 · a9route</title>
+  <link rel="stylesheet" href="/static/style.css" />
+</head>
+<body>
+  <div class="conn-banner hidden" id="connBanner" role="alert"></div>
+  <div class="toasts" id="toasts" aria-live="polite"></div>
+
+  <header class="topbar">
+    <div class="brand">
+      <div class="brand-mark">a9</div>
+      <div class="brand-text">
+        <h1>跑图视频 → 路线</h1>
+        <p class="brand-sub">
+          把一段比赛录像拖进来 → 每个整百分点截一张图 + 判断那一刻在做什么 →
+          生成可粘贴的百分比路线草稿
+        </p>
+      </div>
+    </div>
+
+    <div class="device-box">
+      <div class="field-label">服务器上已有的视频</div>
+      <div class="device-row">
+        <select class="select" id="videoSelect" aria-label="服务器上的视频"></select>
+        <button class="btn btn-icon" id="videoScanBtn" type="button"
+                title="重新扫描目录" aria-label="重新扫描">⟳</button>
+        <button class="btn btn-primary" id="videoAnalyzeBtn" type="button">开始分析</button>
+      </div>
+      <div class="device-source" id="videoHint">正在读取视频目录…</div>
+    </div>
+
+    <div class="actions">
+      <button class="btn btn-ghost" id="paramsBtn" type="button"
+              title="查看本次生效的判据参数">参数</button>
+      <button class="btn btn-ghost" id="stopWatchBtn" type="button"
+              title="停止轮询（不会中断后台分析）">停止跟随</button>
+    </div>
+  </header>
+
+  <main class="layout layout-single">
+    <section class="panel">
+      <div class="panel-head">
+        <h2 class="panel-title">分析</h2>
+        <div class="pill" id="jobPill">空闲</div>
+      </div>
+
+      <div class="drop-zone" id="dropZone">
+        <p class="drop-main">把跑图录像 **拖到这里**</p>
+        <p class="drop-sub">或者
+          <button class="link-btn" id="pickFileBtn" type="button">选择文件</button>
+          · 支持 mp4 / mkv / avi / mov / webm
+        </p>
+        <p class="drop-sub muted">
+          录像要是 **1280×720**（判据的框都是在这个分辨率上量的）。
+          分辨率不一样要先改 <code>config.json</code> 里的框。
+        </p>
+        <input type="file" id="videoFile" accept="video/*" hidden />
+      </div>
+
+      <div class="video-path-row">
+        <label class="field-label" for="everySel">抽帧间隔</label>
+        <select class="select select-sm" id="everySel">
+          <option value="0.1">0.10s（更细，更慢）</option>
+          <option value="0.25" selected>0.25s（默认）</option>
+          <option value="0.5">0.50s（更快）</option>
+          <option value="1">1.00s（最快，会漏）</option>
+        </select>
+        <label class="field-label" for="maxSecInput">只分析前</label>
+        <input class="input input-sm" id="maxSecInput" type="number" min="0" step="5"
+               placeholder="全部" />
+        <span class="muted">秒（试跑时填 30，省时间）</span>
+      </div>
+
+      <div class="video-progress">
+        <div class="progress-bar"><div class="progress-fill" id="videoFill"></div></div>
+        <div class="progress-text" id="videoStatus">等待上传或选择视频…</div>
+      </div>
+
+      <div class="alert alert-error hidden" id="fatalBox"></div>
+
+      <div class="video-result hidden" id="videoResult">
+        <div class="video-cols">
+          <div class="video-col">
+            <div class="video-result-head">
+              <span class="field-label">路线草稿（一整行，直接粘贴）</span>
+              <span class="muted" id="videoRouteStat"></span>
+              <button class="btn btn-ghost btn-sm" id="videoCopyBtn" type="button">复制路线</button>
+              <button class="btn btn-ghost btn-sm" id="videoDownloadBtn" type="button">下载完整</button>
+            </div>
+            <pre class="route-text" id="videoRouteText"></pre>
+            <div class="field-label">逐条判据（核对用）</div>
+            <pre class="route-notes" id="videoRouteNotes"></pre>
+          </div>
+          <div class="video-col">
+            <div class="video-result-head">
+              <span class="field-label">每个百分点的截图与判据</span>
+              <span class="muted">点图放大</span>
+            </div>
+            <div class="shots-grid" id="videoShots"></div>
+          </div>
+        </div>
+      </div>
+    </section>
+  </main>
+
+  <div class="modal hidden" id="paramsModal" role="dialog" aria-modal="true"
+       aria-labelledby="paramsModalTitle">
+    <div class="modal-card modal-wide">
+      <div class="modal-head">
+        <h3 id="paramsModalTitle">本次生效的判据参数</h3>
+        <button class="btn btn-icon" id="paramsModalClose" type="button" aria-label="关闭">✕</button>
+      </div>
+      <div class="modal-body">
+        <p class="modal-note">
+          这些值来自 <code>config.json</code>（没有就用内置默认值）。
+          改法：命令行 <code>a9route config set vision__nitro_red_thr=0.22</code>，
+          或某一次分析单独覆盖 <code>--set vision__nitro_red_thr=0.22</code>。
+        </p>
+        <pre class="route-notes" id="paramsDump"></pre>
+      </div>
+    </div>
+  </div>
+
+  <div class="lightbox hidden" id="lightbox" role="dialog" aria-modal="true" aria-label="放大查看">
+    <img class="lightbox-img" id="lightboxImg" alt="" />
+    <div class="lightbox-cap" id="lightboxCap"></div>
+  </div>
+
+  <script src="/static/app.js"></script>
+</body>
+</html>

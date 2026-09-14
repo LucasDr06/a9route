@@ -1,0 +1,19 @@
+feat: 从 asphalt9auto 抽出「跑图视频 → 路线」为独立项目
+
+判据与算法逐字搬自 asphalt9auto 的 race 线（cues / video / intent / route /
+progress），只做了三件改动：包名与目录、参数从代码常量改成 config.json、
+Web 端只留跑图窗口并重写成单页。
+
+- 包 a9route：core（路线格式 / 操作目的）、vision（抽帧 / 判据 / HUD 读数）、
+  ocr（PaddleOCR 懒加载）、web（本地窗口）、tests（离线回归）
+- CLI：video / analyze / check / show / serve / routes / config / test
+- 参数全部集中到 config.py + config.json（env > json > 默认），
+  默认值与原来完全一致（每个都带实测注释）
+- Web：拖视频 → 后台线程分析 → 轮询进度 → 左路线右逐百分点截图 + 点图放大
+- 测试 191 项全绿（route 41 / intent 22 / video 92 / web 36），
+  含真帧样本回归（选路路标 3 张 + 刹车/氮气按键截图）
+- 不依赖 adb/设备：RaceReader.read() 必须传帧，忘了传直接报错而不是去截屏
+
+顺手修掉一个真 bug：精细扫描那段被 except 吞掉异常，搬迁后一个 import 路径
+写错（from a9route.vision import intent）表现成「按键细扫没有结果」，
+现在有专门的回归盯着那行日志。

@@ -1,0 +1,47 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "a9route"
+version = "0.1.0"
+description = "跑图视频 → 路线：从狂野飙车9 的比赛录像里推断操作，生成百分比路线脚本"
+readme = "README.md"
+requires-python = ">=3.10"
+license = { text = "MIT" }
+dependencies = [
+    "numpy>=1.24",
+    "opencv-python>=4.8",
+    "flask>=3.0",
+]
+
+[project.optional-dependencies]
+# OCR 很重（paddlepaddle + paddleocr，几百 MB，首次会下载模型）。
+# 只有「读路程 NN%」「漂移NN米」「完成360度旋转」这些文字判据需要它；
+# 颜色/圆检测那几路判据不需要。工程上用 conda 环境自带的那份即可，不必 pip 装。
+ocr = [
+    "paddlepaddle>=3.0",
+    "paddleocr>=3.0",
+]
+dev = [
+    "pytest>=8.0",
+]
+
+[project.scripts]
+a9route = "a9route.cli:main"
+
+[tool.setuptools]
+packages = [
+    "a9route",
+    "a9route.core",
+    "a9route.vision",
+    "a9route.ocr",
+    "a9route.web",
+    "a9route.tests",
+]
+
+[tool.setuptools.package-data]
+"a9route.web" = ["templates/*.html", "static/*"]
+
+[tool.pytest.ini_options]
+testpaths = ["a9route/tests"]
