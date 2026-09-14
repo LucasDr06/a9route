@@ -140,7 +140,16 @@ def create_app() -> Flask:
         可选：`every`（抽帧间隔秒）、`max_seconds`（只分析前 N 秒，试跑用）、
         `set`（临时改配置，形如 `{"vision__nitro_red_thr": 0.22}`，只影响这一次）。
         """
-        data = request.get_json(silent=True) or {}
+        # JSON 解不出来要把话说清楚（否则前端只看到一个**空 400**，很难查）——
+        # 常见原因：Content-Type 没写 application/json，或 body 不是 UTF-8
+        #（实测：PowerShell 的 Invoke-WebRequest 发中文 JSON 时会踩这个坑）。
+        data = request.get_json(silent=True)
+        if data is None and request.files.get("video") is None:
+            if (request.data or b"").strip():
+                return jsonify(error="请求体不是合法 JSON（要 UTF-8 + "
+                                     "Content-Type: application/json）"), 400
+            data = {}
+        data = data or {}
         every = data.get("every") or request.form.get("every")
         every = float(every) if every else None
         max_seconds = data.get("max_seconds") or request.form.get("max_seconds")

@@ -1,0 +1,8 @@
+fix(web): 请求体不是合法 JSON 时要说清楚原因
+
+原先 `/api/analyze` 在 JSON 解不出来时回一个**空 400**，前端只能看到"HTTP 400"，
+很难查。实测踩到过：用 PowerShell 的 `Invoke-WebRequest` 发中文 JSON 时，
+body 编码不对 -> 空 400（用 `curl --data-binary @file` 就正常）。
+
+现在这种情况回 `{"error": "请求体不是合法 JSON（要 UTF-8 + Content-Type:
+application/json）"}`；multipart 上传分支不受影响。
