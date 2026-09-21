@@ -9,15 +9,14 @@
 
 | 后端 | 依赖 | 什么时候用 |
 |---|---|---|
-| `heuristic` | 只要 cv2/numpy | **默认**。和以前逐字一致；模型还没训出来、或模型文件丢了时的退路 |
-| `onnx` | `onnxruntime`（约 15 MB） | **推荐**：训练在 `ai_joy`（有 torch cu128），运行时不必为了推理再装 2.5 GB torch |
+| `heuristic` | 只要 cv2/numpy | 旧的像素判据。**只在调试/预标注时显式打开** —— 正式跑图不用它 |
+| `onnx` | `onnxruntime`（约 15 MB） | **当前默认走这条**：训练在 `ai_joy`（有 torch cu128），运行时不必为了推理再装 2.5 GB torch |
 | `ultralytics` | `torch` + `ultralytics` | 手里只有 `.pt`、或者想边训边试的时候 |
 
-**默认是 `heuristic`**，不是"自动发现模型就用" —— 因为**磁盘上多一个文件就
-悄悄改变识别结果**是这类工具最让人抓狂的行为（同一条路线今天跑一样、
-明天跑不一样，还查不出原因）。要切就显式切：`--set vision__key_backend=onnx`。
-想省事可以把后端设成 `auto`（= 模型文件存在就用模型，否则退回启发式），
-但那要你自己承担"文件一出现行为就变"这件事。
+**默认是 `auto`**：`models/keys.onnx` 在就用模型（解析成 `onnx`）。
+但 ⚠️ `auto` **不是**"模型没了就悄悄退回启发式"（2026-09-15 按用户要求改）——
+模型文件不在会**直接报错**，因为"看起来正常、其实是像素判据"的路线比报错更坏 ✗。
+要显式用判定旧那一套：`a9route config set vision__key_backend=heuristic`。
 
 ## 三个后端必须**同语义**
 
@@ -467,7 +466,7 @@ def resolve_backend(cfg=None) -> tuple[str, str, dict]:
     """算出"这次到底用哪个后端、哪个模型文件"。
 
     返回 `(后端名, 模型路径, 参数)`。`auto` 的解析规则就是文档里说的那一条：
-    **模型文件存在就用模型，否则启发式**。
+    **模型文件存在就用模型；不存在就报错**（不静默退回启发式）。
 
     ⚠️ 不传 `cfg` 时用 `config.current()`（**当前生效**那份），不是 `load_config()`
     （只读磁盘）—— 后者会把 `analyze --set vision__key_backend=...` 这类本次覆盖漏掉。
@@ -563,22 +562,31 @@ def reset_cache() -> None:
 def describe_backend(cfg=None) -> str:
     """一行话说明当前后端（CLI 启动时打出来，**别让人猜现在用的是哪套判据**）。
 
-    `auto` 会**说清它到底选了哪个、以及为什么** —— 模型文件不在就明确说
-    "退回启发式"，而不是让人以为在用模型。
+    `auto` 会**说清它到底选了哪个**；模型文件不存在时 `resolve_backend` 会抛
+    （`auto` 不静默退回启发式），这里把那句话原样报出来，而不是含糊过去。
     """
     from a9route.train.labels import CLASS_ZH
 
+    def _raw() -> str:
+        """当前配置里那个**原始**取值（不传 cfg 时看 `config.current()` ——
+        否则 `describe_backend()` 会看不见 `--set`/环境变量造成的本次覆盖 ✗）。"""
+        c = cfg
+        if c is None:
+            from a9route import config as cfgmod
+            c = cfgmod.current()
+        return str(((c or {}).get("vision", {}) or {}).get("key_backend") or "heuristic").lower()
+
     try:
         be, mp, params = resolve_backend(cfg)
-        raw = str(((cfg or {}).get("vision", {}) or {}).get("key_backend")
-                  or "heuristic").lower()
+        raw = _raw()
     except Exception as exc:
+        if _raw() == "auto":
+            return ("按键后端: **配置为 auto，但模型不能用** —— 这次分析会直接失败，"
+                    "不会退回像素判据。\n    " + str(exc).replace("\n", "\n    "))
         return f"按键后端: 配置有问题（{type(exc).__name__}: {exc}）"
     if be == "heuristic":
-        why = ""
-        if raw == "auto":
-            why = f"（auto：模型 {mp} 不存在 -> 退回启发式）"
-        return "按键后端: heuristic 启发式判据 —— 和以前完全一致" + why
+        return ("按键后端: heuristic 启发式判据（**像素判据**，"
+                "正式跑图请用模型：vision.key_backend 现在是 " + raw + "）")
     exists = Path(mp).is_file()
     zh = "、".join(CLASS_ZH.get(c, c) for c in CLASSES)
     line = (f"按键后端: {be}（{zh}）  {mp}"

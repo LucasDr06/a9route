@@ -276,6 +276,28 @@ def data_yaml(layout_root: Path, *, extra: dict | None = None,
     return out
 
 
+def _yaml_scalar(v) -> str:
+    """把简单值写成 YAML（**不 import pyyaml**）。
+
+    为什么不用 `yaml.safe_dump`：pyyaml 在 `.[train]` 这个 extra 里，
+    而 `a9route test all` 的设计目标是 **在只装了运行依赖的环境里也能全绿** ——
+    这里以前在函数开头 `import yaml`，于是没装 pyyaml 的干净 clone 一跑测试
+    就在这个函数上炸（2026-09-15 复查 clone 流程时发现）✗。
+    真正需要的只有 str / 数 / bool / 数的列表，手写比引依赖划算。
+    """
+    if isinstance(v, bool):
+        return "true" if v else "false"
+    if isinstance(v, (int, float)):
+        return str(v)
+    if isinstance(v, (list, tuple)):
+        return "[" + ", ".join(_yaml_scalar(x) for x in v) + "]"
+    s = str(v)
+    # 需要引号的情况：空串、含特殊字符、看起来像数/布尔
+    if not s or s.strip() != s or any(c in s for c in ":#,[]{}&*!|>'\"%@`\n"):
+        return '"' + s.replace("\\", "\\\\").replace('"', '\\"') + '"'
+    return s
+
+
 def write_data_yaml(path: str | Path, layout_root: Path, *,
                     extra: dict | None = None, classes=None,
                     zh: dict | None = None) -> Path:
@@ -284,8 +306,6 @@ def write_data_yaml(path: str | Path, layout_root: Path, *,
 
     `classes`：这套数据集用哪套类别（默认刹车/氮气；选路传 `CHOICE_CLASSES`）。
     """
-    import yaml
-
     names = tuple(classes) if classes else CLASSES
     zh_map = dict(CLASS_ZH if zh is None else zh)
     p = Path(path)
@@ -306,6 +326,6 @@ def write_data_yaml(path: str | Path, layout_root: Path, *,
     for k, v in (extra or {}).items():
         if k in ("path", "train", "val", "names", "nc"):
             continue
-        body.append(f"{k}: {yaml.safe_dump(v, allow_unicode=True).strip()}")
+        body.append(f"{k}: {_yaml_scalar(v)}")
     p.write_text("\n".join(body) + "\n", encoding="utf-8")
     return p

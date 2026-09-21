@@ -142,6 +142,56 @@ def t2_classes_and_yaml():
           "images/train" in text and "images/val" in text)
     check("  path 是绝对路径（ultralytics 会照着它找图）",
           str(out.resolve()) in text, text.splitlines()[1])
+    # ⚠️ `test all` 必须在**只装了运行依赖**（numpy/opencv/flask/onnxruntime）的环境里也能全绿。
+    #    pyyaml 在 `.[train]` 这个 extra 里，所以这个函数**不许**依赖它 ——
+    #    以前它在开头无条件 `import yaml`，干净 clone 一跑测试就炸（2026-09-15 复查 clone 流程）。
+    #    这里用**真的把 yaml 变成不可导入**来验（静态查字符串会把注释也当成依赖 ✗）。
+    import builtins
+    real_import = builtins.__import__
+
+    def _no_yaml(name, *a, **k):
+        if name == "yaml" or str(name).startswith("yaml."):
+            raise ImportError("本测试故意屏蔽 pyyaml：write_data_yaml 不许依赖它")
+        return real_import(name, *a, **k)
+
+    builtins.__import__ = _no_yaml
+    try:
+        p2 = L.write_data_yaml(out / "data2.yaml", out)
+        got = p2.read_text(encoding="utf-8")
+        check("**屏蔽 pyyaml 后 write_data_yaml 照样能写**（干净 clone 只装 .[model] 也能跑测试）",
+              "nc: 2" in got and "0: brake_pressed" in got, got[:60])
+    except ImportError as exc:
+        check("**屏蔽 pyyaml 后 write_data_yaml 照样能写**（干净 clone 只装 .[model] 也能跑测试）",
+              False, str(exc))
+    finally:
+        builtins.__import__ = real_import
+
+    from a9route.train.choice import CHOICE_CLASSES
+
+    p3 = L.write_data_yaml(out / "data3.yaml", out, classes=CHOICE_CLASSES,
+                           extra={"task": "choice", "split": "seed=7",
+                                  "imgsz": 640, "ratio": 0.2, "flag": True,
+                                  "note": "有两个词: 冒号"})
+    t2 = p3.read_text(encoding="utf-8")
+    check("  extra 里的数/布尔/含冒号的字符串都写得出来",
+          "task: choice" in t2 and "imgsz: 640" in t2 and "flag: true" in t2
+          and '"有两个词: 冒号"' in t2, t2)
+    check("  选路类别也写进 names（0: choice_icon）",
+          "0: choice_icon" in t2 and "nc: 2" in t2, t2[:200])
+    #  装了 pyyaml 就真解析一遍（用 try 而不是 find_spec：find_spec 走的是 import
+    #  机制内部，**屏蔽 __import__ 时它照样说"有"**，探测结果和能不能 import 不是一回事 ✗）
+    try:
+        import yaml as _yaml
+    except ImportError:
+        _yaml = None
+    if _yaml is not None:
+        parsed = _yaml.safe_load(t2)
+        check("  产物是**合法 YAML**（能被 pyyaml 读出来）",
+              parsed["task"] == "choice" and parsed["nc"] == 2
+              and parsed["flag"] is True and parsed["imgsz"] == 640, str(parsed))
+    else:
+        print("  [--] 本环境没装 pyyaml，跳过「产物是合法 YAML」那一条"
+              "（**这是允许的**：写 data.yaml 不需要 pyyaml）")
 
 
 # ------------------------------------------------------------------ T3
@@ -881,6 +931,14 @@ def t12_doctor():
     check("ok 只看关键项（cv2/numpy），不因为缺 torch 就报失败", full.ok is True,
           "critical 缺失: {0}".format([c.name for c in full.checks
                                        if c.critical and not c.ok]))
+    # ⚠️ pyyaml **不在关键项里**：只装运行依赖的干净环境里它本来就该缺，
+    #    而写 `data.yaml` 不需要它（自己拼字符串）。以前它算 critical →
+    #    `train doctor` 在干净环境里永远退 1，人就学会无视它了 ✗
+    yl = [c for c in full.checks if c.name == "yaml"]
+    check("**pyyaml 不算关键项**（干净 clone 缺它也要报「一切正常」）",
+          bool(yl) and yl[0].critical is False, str([(c.name, c.critical) for c in full.checks]))
+    check("  缺 pyyaml 时的提示指向 train 依赖（不是「你坏了」）",
+          bool(yl) and (yl[0].ok or "train" in yl[0].hint), yl[0].hint if yl else "")
 
 
 # ------------------------------------------------------------------ T13
@@ -1467,7 +1525,15 @@ def t15_model_card():
           MC.list_models(TMP / "没有这个目录") == [], "")
 
     line = K.describe_backend({"vision": {"key_backend": "heuristic"}})
-    check("heuristic：说「和以前完全一致」", "完全一致" in line, line[:60])
+    # ⚠️ 措辞在 2026-09-15 改过：以前说"和以前完全一致"，
+    #    但启发式**已经不是**默认路径了 —— 这句话会让看日志的人以为"一切照旧" ✗
+    #    现在必须点明它是**像素判据**、且正式跑图该用模型。
+    check("heuristic：点明是**像素判据**、并指向模型后端",
+          "像素判据" in line and "模型" in line, line[:80])
+    check("  auto + 模型不在：**明说这次会失败**（不再说「退回启发式」）",
+          "不会" in K.describe_backend(
+              {"vision": {"key_backend": "auto",
+                          "key_model": str(TMP / "没有.onnx")}}), "")
     line2 = K.describe_backend({"vision": {"key_backend": "auto",
                                            "key_model": str(TMP / "没有.onnx")}})
     check("auto + 模型不在：**明说会报错**（不再说「退回启发式」）",

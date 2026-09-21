@@ -32,9 +32,14 @@ from a9route.train.choice import (CHOICE_CLASSES, CHOICE_ZH, MAX_OPTIONS,
 #: 可用的后端名（`config.vision.choice_backend` 的取值）
 BACKENDS = ("heuristic", "auto", "onnx", "ultralytics")
 
-#: 推理分辨率 / 置信度 / NMS（默认值和按键那边一致）
+#: 推理分辨率 / NMS（默认值和按键那边一致）
 DEFAULT_IMGSZ = 640
-DEFAULT_CONF = 0.40
+#: ⚠️ 选路的默认置信度是 **0.30**，不是按键那边的 0.40 ——
+#: 这是 `train eval` 在 val 上扫出来的最佳档，也写在模型清单里
+#: （`models/choice.json` 的 `conf_default`）。两边默认值**必须一致**：
+#: 以前配置默认 0.40、清单记 0.30，于是 clone 下来不带 `config.json` 的人
+#: 拿到的是**没调过的那一档**，而文档里写的是 0.30 ✗（2026-09-15 修）。
+DEFAULT_CONF = 0.30
 DEFAULT_IOU = 0.50
 
 
@@ -246,7 +251,8 @@ _cache: dict = {}
 def resolve_backend(cfg=None) -> tuple:
     """算出"这次用哪个后端、哪个模型"。
 
-    `auto` = **模型文件在就用模型，否则启发式**（和按键那边同一个规则）。
+    `auto` = **模型文件在就用模型**；模型不在**报错**（见下面 274 行的注释 ——
+    用户明确要求"判定全部交给 YOLO"，所以 `auto` **不静默退回**启发式）。
 
     ⚠️ 不传 `cfg` 时用的是 `config.current()`（**当前生效**的那份），
     **不是** `load_config()`（只读磁盘）。以前用后者，于是
@@ -335,16 +341,26 @@ def reset_cache() -> None:
 
 def describe_choice_backend(cfg=None) -> str:
     """一行话说明选路用的是哪个后端（**别让人猜**）。"""
+    def _raw() -> str:
+        c = cfg
+        if c is None:
+            from a9route import config as cfgmod
+            c = cfgmod.current()
+        return str(((c or {}).get("vision", {}) or {})
+                   .get("choice_backend") or "heuristic").lower()
+
     try:
         be, mp, params = resolve_backend(cfg)
-        raw = str(((cfg or {}).get("vision", {}) or {}).get("choice_backend")
-                  or "heuristic").lower()
+        raw = _raw()
     except Exception as exc:                           # noqa: BLE001
+        if _raw() == "auto":
+            return ("选路后端: **配置为 auto，但模型不能用** —— 这次分析会直接失败，"
+                    "不会退回 HoughCircles。\n    "
+                    + str(exc).replace("\n", "\n    "))
         return "选路后端: 配置有问题（{0}: {1}）".format(type(exc).__name__, exc)
     if be == "heuristic":
-        why = ("（auto：模型 {0} 不存在 -> 退回启发式）".format(mp)
-               if raw == "auto" else "")
-        return "选路后端: heuristic HoughCircles" + why
+        return ("选路后端: heuristic HoughCircles（**像素判据**，"
+                "正式跑图请用模型：choice_backend={0}）".format(raw))
     zh = "、".join(CHOICE_ZH.get(c, c) for c in CHOICE_CLASSES)
     return ("选路后端: {0}（{1}）  {2}  imgsz={3} conf={4}"
             .format(be, zh, mp, params["imgsz"], params["conf"]))

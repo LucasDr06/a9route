@@ -483,6 +483,28 @@ def t7b_one_backend():
     check("  粗扫的其它结果（drift/spin…）**不许漏进路线**",
           "D:4000" not in body[0], body[0])
 
+    # ⑤ 路线头那句「谁判的」必须是**算出来的**，不能是写死的常量。
+    #    历史 bug：头里写死 "成对脉冲(<200ms)=360"（实际默认 0.30s）和
+    #    "keys.onnx / choice.onnx"（换模型后就不对了）—— 输出会一本正经地写错自己 ✗
+    from a9route import config as _cfgmod
+    cfg_now = _cfgmod.current()
+    gap_now = float(cfg_now["intent"]["tap_360_gap"])
+    gap_txt, prov, all_model = V._provenance()
+    check("路线头里的 360 间隔**跟着当前配置走**（不是写死的 200ms）",
+          gap_txt == (f"{gap_now:.2f}".rstrip("0").rstrip(".") + "s") and gap_txt != "0.2s",
+          "config={0} 头里写={1}".format(gap_now, gap_txt))
+    check("  出处那行两个后端都点名了",
+          "按键=" in prov and "选路=" in prov, prov)
+    if all_model:
+        check("  用模型时：写明模型名（不是写死的 keys.onnx）", ".onnx" in prov, prov)
+        check("  用模型时：正文说「这些都来自模型」",
+              "都来自**模型**" in V.suggest_route([s_ocr], fine_scan_ran=True), "")
+    else:
+        check("  用启发式时：写明「像素判据」，**不许出现模型名**",
+              "像素判据" in prov and ".onnx" not in prov, prov)
+        check("  **不全是模型时正文里明确警告**（这种路线看着和正常的一模一样）",
+              "不全是模型" in V.suggest_route([s_ocr], fine_scan_ran=True), "")
+
 
 def t8_hud_parse():
     print("\n=== T8 比赛内读数的解析 ===")

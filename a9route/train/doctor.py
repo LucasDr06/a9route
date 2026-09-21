@@ -85,14 +85,22 @@ def check_environment(*, train_hint: str = "") -> DoctorReport:
     """查当前 Python 环境能干什么。"""
     rep = DoctorReport()
     rep.add("python", True, "{0}（{1}）".format(sys.version.split()[0], sys.executable))
-    for name, why in (("cv2", "读视频/存帧"), ("numpy", "数值"),
-                      ("yaml", "写 data.yaml")):
+    for name, why in (("cv2", "读视频/存帧"), ("numpy", "数值")):
         m = _mod(name)
         rep.add(name, m is not None, getattr(m, "__version__", "") if m else why,
                 hint="python -m pip install {0}".format(
-                    {"cv2": "opencv-python", "yaml": "pyyaml"}.get(name, name)),
-                # 这三个缺了**什么都干不了**（连数据集都建不出来）—— 算关键项
+                    {"cv2": "opencv-python"}.get(name, name)),
+                # 这两个缺了**什么都干不了**（连数据集都建不出来）—— 算关键项
                 critical=True)
+    # ⚠️ pyyaml **不是**关键项：写 `data.yaml` 现在是自己按 YAML 格式拼字符串
+    #    （`labels._yaml_scalar`，2026-09-15 改的），只有真正跑 `train run` 时
+    #    ultralytics 才需要它。以前这里把它列成 critical，于是**只装运行依赖的
+    #    干净环境**一敲 `train doctor` 就报"缺 pyyaml"，看着像坏了，其实一切正常 ✗。
+    _y = _mod("yaml")
+    rep.add("yaml", _y is not None,
+            getattr(_y, "__version__", "") if _y else "没装（**只有 `train run` 需要**）",
+            hint="python -m pip install pyyaml   # 或者直接装训练依赖："
+                 " pip install -e \".[train]\"")
 
     torch = _mod("torch")
     if torch is None:

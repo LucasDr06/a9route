@@ -110,7 +110,10 @@ DEFAULTS: dict[str, dict] = {
         #: 选路模型的推理分辨率（留默认值时会跟随模型清单里记的 imgsz）
         "choice_imgsz": 640,
         #: 选路模型的置信度阈值
-        "choice_conf": 0.40,
+        #: （0.30 = `train eval` 在 val 上扫出来的最佳档，和 `models/choice.json`
+        #:   里记的 `conf_default` 是同一个数 —— 两边必须一致，否则 clone 下来的
+        #:   人用的是没调过的 0.40，而文档写 0.30 ✗）
+        "choice_conf": 0.30,
         #: 选路模型的 NMS IoU
         "choice_iou": 0.50,
         #: 选路模型的 onnxruntime 执行后端：auto / CPUExecutionProvider / …

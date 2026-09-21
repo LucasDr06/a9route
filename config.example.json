@@ -1,9 +1,14 @@
 {
-  "vision": {
-    "choice_conf": 0.3
-  },
   "scan": {
-    "choice_min_hold": 4,
-    "choice_idle_hold": 8
+    "every": 0.2,
+    "workers": 4
+  },
+  "hud": {
+    "choice_band": [400, 92, 480, 80]
+  },
+  "vision": {
+    "key_backend": "auto",
+    "choice_backend": "auto",
+    "choice_conf": 0.35
   }
 }

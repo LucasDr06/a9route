@@ -876,6 +876,60 @@ def flat_route(ops: list[PercentShot]) -> str:
     return ",".join(parts)
 
 
+def _provenance() -> tuple[str, str]:
+    """路线头里那句「这些判定到底是谁做的」——**必须输出实际在跑的东西**。
+
+    为什么单独拿出来：这里以前是**写死的字符串**（"成对脉冲(<200ms)=360"、
+    "keys.onnx / choice.onnx"），而 `tap_360_gap` 的默认值早已是 0.30s、
+    模型也可以用 `train use` 换掉 —— 于是路线文件会**一本正经地写错自己** ✗。
+    这种"输出看起来权威、其实是过期常量"的坑比报错更难发现，所以：
+
+    * 360 的间隔阈值**从运行中的配置读**（和真正判定用的那个值同源）；
+    * 模型文件名**从后端解析结果读**（`auto` / `onnx` / `heuristic` 都如实写）。
+
+    解析失败时**不抛异常**（不能因为一句注释把整个分析搞挂），而是写明"没解析出来"。
+
+    返回 `(360 间隔的文字, 后端来源的文字, 是不是"全模型")` —— 第三个值用来决定
+    那句话该说"来自模型"还是"**不全是**模型"：后者是**调试/预标注**时才会出现的状态，
+    但它产出的路线看起来和正常路线一模一样，所以必须在文件里写明 ✗。
+    """
+    gap = "?"
+    try:
+        from a9route import config as _cfgmod
+
+        gap = f"{float(_cfgmod.current()['intent']['tap_360_gap']):.2f}".rstrip("0")
+        gap = gap.rstrip(".") + "s"
+    except Exception:
+        pass
+
+    used = {"model": 0, "other": 0}
+
+    def _one(mod_name: str, label: str) -> str:
+        try:
+            import importlib
+
+            from a9route import config as _c
+
+            mod = importlib.import_module("a9route.vision." + mod_name)
+            be, path, _params = mod.resolve_backend()
+            if be == "heuristic":
+                # ⚠️ 这里**不能**顺手打印模型路径：解析出来的那个路径此刻**没被使用**
+                #    （实测踩过：路线头写着"启发式（…\models\keys.onnx）"，
+                #     看着像"正在用模型"，其实是像素判据 ✗）。
+                key = "key_backend" if mod_name == "keys" else "choice_backend"
+                raw = ((_c.current().get("vision") or {}).get(key)) or "heuristic"
+                used["other"] += 1
+                return f"{label}=启发式（{key}={raw}，像素判据）"
+            used["model"] += 1
+            return f"{label}={be}:{Path(path).name}"
+        except Exception as exc:
+            used["other"] += 1
+            return f"{label}=?（{type(exc).__name__}）"
+
+    src = _one("keys", "按键") + " / " + _one("choice", "选路")
+    return gap, src, used["other"] == 0
+
+
 def suggest_route(shots: list[PercentShot], *, timeline: Timeline | None = None,
                   collapsed: bool = True, fine_scan_ran: bool = False) -> str:
     """把"每个百分点检测到的操作"写成**可以跑的路线脚本**。
@@ -892,7 +946,7 @@ def suggest_route(shots: list[PercentShot], *, timeline: Timeline | None = None,
 
     用户 2026-09-13 的规则要点：
     * 精细扫描**不产百分点**，只产时间戳；百分比由"时间 -> 百分比"关系事后填；
-    * 刹车脉冲**间隔 <200ms 的成对脉冲 = 360**；
+    * 刹车脉冲**间隔 < `intent.tap_360_gap`**（默认 300ms）的成对脉冲 = 360；
     * **独立短刹车脉冲 = 打断氮气**（写成很短的 `D:`）；
     * 氮气多次快速点击 -> **每百分比最多取两次**，并把**两次实测间隔**写进操作
       （`N:0:2:<间隔>`）；OCR 见到「完美氮气」时同样用实测间隔 ✓；
@@ -937,14 +991,22 @@ def suggest_route(shots: list[PercentShot], *, timeline: Timeline | None = None,
             by_pct.setdefault(p, []).extend(ops)
         data = ",".join(f"{p}," + "|".join(o for o in ops if o)
                         for p, ops in sorted(by_pct.items()) if any(ops))
+        gap_txt, prov, all_model = _provenance()
+        if all_model:
+            src_line = (f"# ⚠️ 上面这些都来自**模型**（{prov}）＋信号形状规则；")
+        else:
+            src_line = (
+                f"# ⚠️ 注意：这条路线**不全是模型判的**（{prov}）——"
+                "启发式只用于调试/预标注，正式跑图请用模型后端；")
         lines = [
             "# 由跑图视频**自动推断**的路线（操作是判据猜的，请核对后使用）",
             *head_scan,
-            "# 判据：刹车键**成对脉冲(<200ms)=360**、**独立短脉冲=打断氮气**、按住=漂移；",
+            f"# 判据：刹车键**成对脉冲(间隔 <{gap_txt})=360**、"
+            "**独立短脉冲=打断氮气**、按住=漂移；",
             "#       氮气键=正在点氮气（多次连点每百分比最多取两次 + 实测间隔）；",
             "#       选路=上方圆形路标（**按「选路段」取**：持续没路标=这一段结束；"
             "段内没变取第一次、只有选中变了取最后一次、选项数变了立刻开新段）。",
-            "# ⚠️ 上面这些都来自**模型**（keys.onnx / choice.onnx）＋信号形状规则；",
+            src_line,
             "#    只有「关自动驾驶 S:2000」例外 —— 它是 **OCR 文字判据**"
             "（读到「TOUCHDRIVE」），",
             "#    用户口径：touchdrive 就用 OCR 识别（不训模型）。详见下面单独那一段。",
