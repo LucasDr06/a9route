@@ -1,0 +1,26 @@
+{
+  "classes": [
+    "choice_icon",
+    "choice_selected"
+  ],
+  "conf_default": 0.3,
+  "dataset": "choice",
+  "dataset_frames": 1200,
+  "dataset_reviewed": 1200,
+  "format": 1,
+  "imgsz": 640,
+  "iou_default": 0.5,
+  "metrics": {
+    "best_epoch": 39,
+    "box_map": 0.85092,
+    "box_map50": 0.98428,
+    "precision": 0.98042,
+    "recall": 0.9802
+  },
+  "name": "choice",
+  "nc": 2,
+  "notes": "conf 按 val 实测最佳取 0.3（NOTES 10.29）",
+  "onnx": "choice.onnx",
+  "source_weights": "runs\\choice\\weights\\best.pt",
+  "trained_at": "2026-09-15 18:21:35"
+}

@@ -819,11 +819,20 @@ def export_onnx(weights: str | Path, *, imgsz: int = 640, out: str | Path | None
     progress(f"ONNX -> {target}（{target.stat().st_size / 1e6:.1f} MB）")
 
     # ---- 写清单（换模型/排查都靠它）----
+    #
+    # ⚠️ `source_weights` 记**相对 `models/` 的路径**（能相对就相对）。
+    # 原来记的是绝对路径（`D:\Projects\a9route\models\runs\...\best.pt`）——
+    # 清单会跟着仓库走（现在运行时模型是入库的），
+    # 一条本机绝对路径对别人（以及你换机器之后）毫无意义 ✗
+    try:
+        src_rel = str(Path(src).resolve().relative_to(paths.MODELS_DIR.resolve()))
+    except Exception:                                  # noqa: BLE001
+        src_rel = Path(src).name
     card = MC.ModelCard(
         loaded=True,            # 这份就是要写下去的，别让 describe() 说"没有清单"
         name=name or target.stem,
         onnx=target.name,
-        source_weights=str(src),
+        source_weights=src_rel,
         classes=[str(c) for c in names],
         nc=len(names),
         imgsz=int(imgsz),

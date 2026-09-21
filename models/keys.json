@@ -1,0 +1,26 @@
+{
+  "classes": [
+    "brake_pressed",
+    "nitro_pressed"
+  ],
+  "conf_default": 0.4,
+  "dataset": "keys",
+  "dataset_frames": 1200,
+  "dataset_reviewed": 572,
+  "format": 1,
+  "imgsz": 640,
+  "iou_default": 0.5,
+  "metrics": {
+    "best_epoch": 21,
+    "box_map": 0.97459,
+    "box_map50": 0.97482,
+    "precision": 0.98885,
+    "recall": 0.97826
+  },
+  "name": "keys",
+  "nc": 2,
+  "notes": "",
+  "onnx": "keys.onnx",
+  "source_weights": "runs\\keys\\weights\\best.pt",
+  "trained_at": "2026-09-15 16:06:59"
+}

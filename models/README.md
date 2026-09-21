@@ -1,18 +1,33 @@
-# models/ —— 模型与权重（**不入库，但别当垃圾删**）
+# models/ —— 模型与权重（**分两类管：运行时模型入库，训练产物不入库**）
 
 ```
 models/
-├── weights/
+├── weights/                ✗ 不入库
 │   ├── yolov8n.pt          YOLOv8n 预训练权重（6.5 MB）
 │   └── yolo26n.pt          ultralytics 做 AMP 自检要用的（可选）
-├── keys.onnx               **按键（刹车/氮气）**，运行时加载的就是它
-├── keys.json               模型清单：类别顺序 / imgsz / 训于 / 数据集 / 指标
-├── choice.onnx             **选路**（另一套类别，2026-09-15 训）
-├── choice.json             同上（classes=choice_icon,choice_selected）
-├── runs/keys/              训练产物：weights/best.pt + 曲线图 + results.csv
-├── runs/choice/            （同上，名称跟数据集走）
-└── .ultralytics/           ultralytics 的 settings 缓存（自动生成，可删）
+├── keys.onnx               ✓ **入库** 按键（刹车/氮气），运行时加载的就是它
+├── keys.json               ✓ **入库** 模型清单：类别顺序 / imgsz / 训于 / 数据集 / 指标
+├── choice.onnx             ✓ **入库** 选路（另一套类别，2026-09-15 训）
+├── choice.json             ✓ **入库** 同上（classes=choice_icon,choice_selected）
+├── runs/keys/              ✗ 不入库 训练产物：weights/best.pt + 曲线图 + results.csv
+├── runs/choice/            ✗ 不入库 （同上，名称跟数据集走）
+└── .ultralytics/           ✗ 不入库 ultralytics 的 settings 缓存（自动生成，可删）
 ```
+
+## 为什么运行时模型要入库（2026-09-15 改的口径）
+
+* **没有它们 `analyze` 会直接报错** —— `key_backend`/`choice_backend` 默认是 `auto`，
+  而 `auto` **不再静默退回启发式**（模型不在就报"这次分析无效"并给出修法）。
+  所以模型不入库的话，别人（以及你换机器之后）clone 下来**跑不了**；
+* 体积**只有 ~23 MB**（两个 ONNX 各 11.67 MB + 两份 1 KB 清单），
+  GitHub 单文件 100 MB 的线远得很，也不值得上 LFS；
+* **训练产物反过来不入库**：`models/runs/` 有 66 MB（best.pt / last.pt / 曲线 / 混淆矩阵），
+  它们是**过程产物**，重训一遍就有；`weights/`（预训练权重）能用
+  `a9route train fetch` 重新下；`keys_v1_uncorrected.onnx` 那种旧备份也留在本地。
+
+> 清单里的 `source_weights` 记的是**相对 `models/` 的路径**（`runs/choice/weights/best.pt`），
+> 不是本机绝对路径 —— 清单会跟着仓库走，一条 `D:\...` 对别人毫无意义 ✗
+> （`runner.export_onnx` 现在就是这么写的）。
 
 **两个任务是两套模型、两套类别、两套配置**（`key_*` / `choice_*`），
 互相之间切错会被清单里的类序检查拦住（`train use` 和运行时都会拒绝）。

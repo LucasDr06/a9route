@@ -83,6 +83,10 @@ $py = "C:\Users\Admin\miniconda3\envs\alphash9auto\python.exe"
 > 想用启发式请**显式**设 `vision.key_backend=heuristic`（只用于调试/预标注）。
 > 「路程 NN%」用 PaddleOCR；`360 / 漂移 / 双击氮气` 由**信号形状规则**推出
 > （`core/intent.py`，模型给的按键信号 + 用户定的规则）。
+>
+> **两个训好的模型（~23 MB）就在仓库里** —— clone 下来直接能跑 `analyze`；
+> 数据集（几百 MB、含人工标注）和训练产物（`models/runs/`，66 MB）不入库，
+> 见 `models/README.md`。本机调好的参数可以抄 `config.example.json` 成 `config.json`。
 
 ### 录像要求
 

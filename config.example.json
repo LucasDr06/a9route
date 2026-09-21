@@ -1,0 +1,9 @@
+{
+  "vision": {
+    "choice_conf": 0.3
+  },
+  "scan": {
+    "choice_min_hold": 4,
+    "choice_idle_hold": 8
+  }
+}
