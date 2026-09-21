@@ -313,6 +313,149 @@ body {
 }
 .lightbox-cap { font-size: 13px; color: #cfe0f5; text-align: center; }
 
+/* ============================================================ 数据集体检页 */
+/* 顶部那个"数据集体检"是 <a class="btn">，让它和按钮长得一样 */
+a.btn { text-decoration: none; display: inline-flex; align-items: center; }
+
+/* --- 体检：计数卡片 --- */
+.ds-counts {
+  display: grid; gap: 8px; margin-bottom: 14px;
+  grid-template-columns: repeat(auto-fill, minmax(150px, 1fr));
+}
+.ds-count {
+  background: var(--card); border: 1px solid var(--border);
+  border-radius: var(--radius-sm); padding: 8px 10px;
+  display: flex; flex-direction: column; gap: 3px;
+}
+.ds-count-k { font-size: 11.5px; color: var(--text-dim); }
+.ds-count-v { font-size: 14px; font-weight: 600; color: var(--text);
+              word-break: break-word; }
+
+/* --- 体检：结论列表 --- */
+.ds-findings { display: flex; flex-direction: column; gap: 7px; }
+.finding {
+  display: flex; align-items: flex-start; gap: 9px;
+  padding: 9px 11px; border-radius: var(--radius-sm);
+  border: 1px solid var(--border); background: var(--card);
+}
+.finding-ok { border-color: rgba(34, 197, 94, .35); background: rgba(34, 197, 94, .07); }
+.finding-warn { border-color: rgba(245, 158, 11, .45); background: rgba(245, 158, 11, .09); }
+.finding-error { border-color: rgba(239, 68, 68, .5); background: rgba(239, 68, 68, .1); }
+.finding-tag {
+  flex: none; font-size: 11px; padding: 1px 8px; border-radius: 9px;
+  border: 1px solid var(--border-hi); color: var(--text-dim);
+}
+.finding-error .finding-tag { color: #ffd7d7; border-color: rgba(239, 68, 68, .6); }
+.finding-warn .finding-tag { color: #fde68a; border-color: rgba(245, 158, 11, .6); }
+.finding-ok .finding-tag { color: #bbf7d0; border-color: rgba(34, 197, 94, .5); }
+.finding-kind {
+  flex: none; font-family: var(--mono); font-size: 11px;
+  color: var(--text-faint); padding-top: 1px; min-width: 76px;
+}
+.finding-body { font-size: 12.5px; line-height: 1.5; }
+.finding-detail { color: var(--text-dim); font-size: 12px; margin-top: 2px; }
+.ds-samples { margin-top: 5px; display: flex; flex-wrap: wrap; gap: 5px; }
+.ds-samples code, .finding-detail code {
+  font-family: var(--mono); font-size: 11px; background: #0e141d;
+  border: 1px solid var(--border); border-radius: 5px; padding: 1px 5px;
+}
+
+/* --- 体检：标定表 --- */
+.ds-calib { margin-top: 14px; }
+.ds-calib summary { cursor: pointer; font-size: 12.5px; color: var(--text-dim); }
+.ds-calib-body { margin-top: 8px; }
+.ds-calib-row {
+  display: flex; gap: 10px; font-size: 12px; padding: 3px 0;
+  border-bottom: 1px dashed var(--border);
+}
+.ds-calib-row > span { color: var(--text-dim); min-width: 170px; }
+.ds-calib-row code { font-family: var(--mono); color: #cfe0f5; }
+
+/* --- 逐帧：工具条 --- */
+.ds-toolbar {
+  display: flex; flex-wrap: wrap; align-items: center; gap: 8px 10px;
+  padding: 10px 11px; border: 1px solid var(--border);
+  border-radius: var(--radius-sm); background: var(--bg-soft); margin-bottom: 10px;
+}
+.ds-check {
+  display: inline-flex; align-items: center; gap: 5px;
+  font-size: 12px; color: var(--text-dim); cursor: pointer; user-select: none;
+}
+.ds-legend { margin: 0 0 12px; line-height: 1.7; }
+.lg { padding: 1px 7px; border-radius: 5px; font-size: 11.5px; }
+.lg-label { border: 2px solid var(--ok); color: #bbf7d0; }
+.lg-calib { border: 2px dashed var(--accent-hi); color: #bfdbfe; }
+
+/* --- 逐帧：卡片网格 --- */
+.ds-grid {
+  display: grid; gap: 12px;
+  grid-template-columns: repeat(auto-fill, minmax(420px, 1fr));
+}
+.ds-card {
+  background: var(--card); border: 1px solid var(--border);
+  border-radius: var(--radius-sm); padding: 9px; outline: none;
+  display: flex; flex-direction: column; gap: 8px;
+}
+.ds-card:focus { border-color: var(--accent); box-shadow: 0 0 0 2px rgba(59, 130, 246, .3); }
+.ds-card.dirty { border-color: var(--warn); box-shadow: 0 0 0 2px rgba(245, 158, 11, .25); }
+/* 「我看过了、没问题」—— 只记状态、没改标注，用绿色区分于 dirty（橙）*/
+.ds-card.seen { border-color: rgba(34, 197, 94, .55); }
+
+/* 缩略图 + 两套框（框用百分比定位，所以缩放多少都对得上） */
+.ds-shot { position: relative; line-height: 0; }
+.ds-shot > img {
+  display: block; width: 100%; border-radius: 6px; cursor: zoom-in;
+}
+.ds-box { position: absolute; box-sizing: border-box; pointer-events: none; }
+.ds-box.calib {
+  border: 2px dashed var(--accent-hi);
+  border-radius: 50%;            /* 按键本来就是圆的 */
+  box-shadow: 0 0 0 1px rgba(0, 0, 0, .55);
+}
+.ds-box.label-brake {
+  border: 2px solid #facc15; border-radius: 50%;
+  box-shadow: 0 0 0 1px rgba(0, 0, 0, .55);
+}
+.ds-box.label-nitro {
+  border: 2px solid var(--err); border-radius: 50%;
+  box-shadow: 0 0 0 1px rgba(0, 0, 0, .55);
+}
+
+.ds-crops { display: flex; gap: 8px; align-items: flex-start; }
+.ds-crops img {
+  height: 96px; border-radius: 6px; border: 1px solid var(--border-hi);
+  cursor: zoom-in; image-rendering: pixelated; background: #000;
+}
+
+.ds-meta { font-size: 12px; line-height: 1.55; display: flex;
+           flex-direction: column; gap: 3px; }
+.ds-file { font-family: var(--mono); font-size: 12px; color: var(--text); }
+.ds-sub { color: var(--text-faint); font-size: 11.5px; }
+.ds-labels { display: flex; align-items: center; gap: 7px; flex-wrap: wrap; }
+.ds-labels b { color: #fde68a; }
+/* 复核状态小标签：给个固定宽度，免得"未复核/已复核"切换时整行跳动
+   （它同时是 JS 更新状态用的钩子：`card.querySelector('.ds-status')`） */
+.ds-status { min-width: 54px; text-align: center; }
+.ds-cmp { font-size: 11.5px; color: #86efac; }
+.ds-cmp.diff { color: #fca5a5; font-weight: 600; }
+.ds-flag {
+  display: inline-block; font-size: 11px; padding: 1px 7px;
+  border-radius: 9px; margin-right: 5px;
+}
+.ds-flag-d { background: rgba(245, 158, 11, .16); color: #fde68a;
+             border: 1px solid rgba(245, 158, 11, .4); }
+.ds-flag-e { background: rgba(239, 68, 68, .16); color: #ffd7d7;
+             border: 1px solid rgba(239, 68, 68, .45); }
+/* 蓝色 = 提示，不是问题（例如"人工修正过"—— 那正是复核的成果，不该打红）*/
+.ds-flag-i { background: rgba(59, 130, 246, .16); color: #bfdbfe;
+             border: 1px solid rgba(59, 130, 246, .45); }
+.ds-buttons { display: flex; gap: 6px; flex-wrap: wrap; margin-top: 3px; }
+
+.ds-pager {
+  display: flex; align-items: center; gap: 10px;
+  margin-top: 14px; flex-wrap: wrap;
+}
+
 /* ============================================================ 响应式 */
 @media (max-width: 1180px) {
   .video-cols { grid-template-columns: 1fr; }
@@ -329,3 +472,175 @@ body {
     grid-template-columns: minmax(560px, 1fr) minmax(600px, 1.15fr);
   }
 }
+
+/* ============================================================ 选路标注页 */
+/* （本页和 `/dataset` 是两件事：那边管「刹车 / 氮气」按键标注，
+ *   这边管「岔路口选路」—— 三连问：有没有选路 → 几个选项 → 选第几个。
+ *   下面一律用 `ch-` 前缀，和 `.ds-*` 分开，互不影响。） */
+
+/* 三连问按钮的候选色块（图例用，和 band 图上的框同色） */
+.ch-lg-pick { border: 2px solid var(--err); color: #fecaca; }
+.ch-lg-opt { border: 2px solid #facc15; color: #fde68a; }
+.ch-lg-det { border: 2px dashed var(--accent-hi); color: #bfdbfe; }
+
+/* 提交前的提示条：告诉用户"翻页会提交这几帧" */
+.alert-warn {
+  background: rgba(245, 158, 11, .10);
+  border: 1px solid rgba(245, 158, 11, .42);
+  color: #fde68a;
+}
+
+/* --- 逐帧：卡片网格 --- */
+.ch-grid {
+  display: grid; gap: 12px;
+  grid-template-columns: repeat(auto-fill, minmax(430px, 1fr));
+}
+.ch-card {
+  background: var(--card); border: 1px solid var(--border);
+  border-radius: var(--radius-sm); padding: 9px; outline: none;
+  display: flex; flex-direction: column; gap: 8px;
+}
+.ch-card:focus { border-color: var(--accent); box-shadow: 0 0 0 2px rgba(59, 130, 246, .3); }
+/* 位置被人工改过（加了/删了框）—— 橙色，提醒提交时会带 boxes */
+.ch-card.dirty, .ch-card.manual {
+  border-color: var(--warn); box-shadow: 0 0 0 2px rgba(245, 158, 11, .25);
+}
+
+/* --- 两张图：上面 band 放大图（可点着改框），下面整帧缩略图（点开放大） --- */
+.ch-shot { display: flex; flex-direction: column; gap: 7px; }
+.ch-band-wrap { position: relative; line-height: 0; background: #000; border-radius: 6px; }
+.ch-band {
+  display: block; width: 100%; border-radius: 6px;
+  cursor: crosshair; image-rendering: pixelated;
+}
+.ch-full-wrap { position: relative; line-height: 0; }
+/* ⚠️ **不要**给缩略图加 `max-height` / `object-fit: contain`：
+   那样图会在盒子（`.ch-ovs { inset: 0 }` 那个盒子）里留黑边，
+   而叠加层是按"占整帧的百分之几"画的 —— 黑边一出现，框就整体错位。
+   让 `width: 100%` 决定高度（16:9 自然高度），盒子 == 图，百分比才成立。 */
+.ch-thumb {
+  display: block; width: 100%;
+  border-radius: 6px; background: #0a0f15; cursor: zoom-in;
+}
+.ch-ovs { position: absolute; inset: 0; pointer-events: none; z-index: 2; }
+.ch-ovs-full { z-index: 1; }
+
+/* 三种框：蓝虚线 = 检测到的圆；红实线 = 你选中的那一个；黄实线 = 其余选项 */
+.ch-ov { position: absolute; box-sizing: border-box; border-radius: 50%; }
+.ch-ov-det {
+  border: 2px dashed var(--accent-hi);
+  box-shadow: 0 0 0 1px rgba(0, 0, 0, .5);
+  opacity: .95;
+}
+.ch-ov-opt {
+  border: 2px solid #facc15;
+  box-shadow: 0 0 0 1px rgba(0, 0, 0, .6);
+}
+.ch-ov-pick {
+  border: 2px solid var(--err);
+  box-shadow: 0 0 0 1px rgba(0, 0, 0, .65);
+}
+
+/* --- 每帧的文字信息 --- */
+.ch-meta { font-size: 12px; line-height: 1.55; display: flex;
+           flex-direction: column; gap: 3px; }
+.ch-file { font-family: var(--mono); font-size: 12px; color: var(--text); }
+.ch-sub { color: var(--text-faint); font-size: 11.5px; }
+.ch-you b { color: #cfe0f5; }
+.ch-manual { color: var(--warn); }
+/* 「检测到的数量 vs 你答的数量」对不上 —— 橙色醒目提醒 */
+.ch-bad {
+  display: inline-block; margin-left: 6px; padding: 1px 7px; border-radius: 9px;
+  font-size: 11px; font-weight: 600;
+  background: rgba(245, 158, 11, .18); color: #fde68a;
+  border: 1px solid rgba(245, 158, 11, .55);
+}
+
+/* 后端算出来的"这帧要留意什么"（位置是猜的 / 少于最小选项数 / …）。
+   ⚠️ 这些**必须显示**：不显示的话，"后端补了一个猜出来的框"就完全看不出来，
+   人会把它当成真的路标。 */
+.ch-flags { display: flex; flex-wrap: wrap; gap: 4px; margin-top: 2px; }
+.ch-flag {
+  padding: 1px 7px; border-radius: 9px; font-size: 10.5px; font-weight: 600;
+  background: rgba(148, 163, 184, .16); color: #cbd5e1;
+  border: 1px solid rgba(148, 163, 184, .45);
+}
+.ch-flag-position_guessed { background: rgba(56, 189, 248, .16); color: #bae6fd;
+  border-color: rgba(56, 189, 248, .5); }
+.ch-flag-too_few, .ch-flag-no_selected, .ch-flag-below_min {
+  background: rgba(245, 158, 11, .16);
+  color: #fde68a; border-color: rgba(245, 158, 11, .5); }
+.ch-flag-human_fix { background: rgba(34, 197, 94, .16); color: #bbf7d0;
+  border-color: rgba(34, 197, 94, .5); }
+
+/* --- 三连问 --- */
+.ch-q { display: flex; align-items: center; gap: 7px; flex-wrap: wrap; }
+.ch-q-n {
+  flex: none; width: 20px; height: 20px; border-radius: 50%;
+  display: grid; place-items: center;
+  font-size: 11px; font-weight: 700; color: var(--text-dim);
+  background: #1b2531; border: 1px solid var(--border-hi);
+}
+.ch-q-t { font-size: 12px; color: var(--text-dim); min-width: 112px; }
+.ch-opts { display: inline-flex; flex-wrap: wrap; gap: 5px; }
+.ch-opt {
+  padding: 5px 11px; border-radius: var(--radius-sm);
+  border: 1px solid var(--border-hi); background: var(--card-hi);
+  color: var(--text); font: inherit; font-size: 12.5px; font-weight: 600;
+  cursor: pointer; white-space: nowrap;
+}
+.ch-opt:hover { background: #26333f; border-color: #3f4d5c; }
+.ch-opt:disabled { opacity: .38; cursor: not-allowed; }
+/* ②③ 选中的 = 绿色（"这条答完了"）；①「没有」也是绿色（中性），
+ * 只有 ①「有」用蓝色 —— 它是"要接着往下答"的信号 */
+.ch-opt.on { background: rgba(59, 130, 246, .20); border-color: var(--accent);
+             color: #dbeafe; }
+.ch-opt[data-q="1"].on,
+.ch-opt[data-q="2"].on,
+.ch-opt[data-q="3"].on {
+  background: rgba(34, 197, 94, .18); border-color: rgba(34, 197, 94, .6); color: #d3f7e2;
+}
+.ch-opt[data-q="1"][data-val="1"].on {
+  background: rgba(59, 130, 246, .20); border-color: var(--accent); color: #dbeafe;
+}
+.ch-act { display: flex; gap: 6px; flex-wrap: wrap; margin-top: 2px; }
+
+@media (max-width: 900px) {
+  .ch-grid { grid-template-columns: 1fr; }
+}
+
+/* ============================================================================
+   判据参数面板（「参数」弹窗里那些滑块/输入框）
+   —— 只往末尾追加，不改上面的规则
+   ========================================================================== */
+.cfg-bar { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; margin-bottom: 8px; }
+.btn-xs { padding: 3px 8px; font-size: 11.5px; }
+.cfg-form { max-height: 56vh; overflow: auto; padding-right: 4px; }
+.cfg-group { margin-bottom: 14px; }
+.cfg-group-title {
+  font-size: 12px; font-weight: 700; color: var(--text-dim);
+  border-bottom: 1px solid var(--border); padding-bottom: 4px; margin-bottom: 6px;
+}
+.cfg-row {
+  display: grid; grid-template-columns: minmax(220px, 1fr) auto;
+  gap: 4px 12px; padding: 5px 6px; border-radius: 6px;
+}
+.cfg-row:hover { background: #131c26; }
+/* 和"读到的值"不一样的行 -> 高亮（提示"这一项你会改"） */
+.cfg-row.cfg-dirty { background: rgba(56, 189, 248, .10); }
+.cfg-label { font-size: 12.5px; color: var(--text); }
+.cfg-badge {
+  font-size: 10.5px; padding: 0 5px; border-radius: 8px; margin-left: 6px;
+  background: rgba(56, 189, 248, .2); color: #bae6fd;
+  border: 1px solid rgba(56, 189, 248, .5);
+}
+.cfg-ctl { display: flex; align-items: center; gap: 6px; }
+.cfg-range { width: 210px; accent-color: var(--accent-hi, #38bdf8); }
+.cfg-num { width: 84px; }
+.cfg-defval { font-size: 11px; color: var(--text-faint); min-width: 62px; }
+.cfg-note { grid-column: 1 / -1; font-size: 11.5px; color: var(--text-faint); }
+/* ⚠️ "当前后端下这一项不生效" —— 必须显眼，否则人会以为调了没反应是 bug */
+.cfg-note-warn { color: #fde68a; }
+.cfg-inactive { opacity: .55; }
+.cfg-raw { margin-top: 10px; }
+.cfg-raw summary { cursor: pointer; font-size: 12px; color: var(--text-dim); }

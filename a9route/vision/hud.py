@@ -99,11 +99,16 @@ class RaceState:
 class RaceReader:
     """从一帧里读比赛状态。依赖可注入（离线可测）。"""
 
-    def __init__(self, *, ocr=None, reader=None, grab=None, coords: dict | None = None):
+    def __init__(self, *, ocr=None, reader=None, grab=None, coords: dict | None = None,
+                 choice=None):
         from a9route.ocr.reader import OcrReader
         self.ocr = ocr if ocr is not None else OcrReader()
         self._reader = reader            # (frame, box) -> list[str]，测试注入
         self._grab = grab
+        #: 选路的**后端**（`vision.choice`：启发式 / ONNX 模型）。
+        #: 给了就用它判路标 —— 这一处注入让**粗扫和细扫**都同时换了后端
+        #: （两边都走 `choice_icons()`），不会出现"一处用模型、一处用圆检测"的分裂。
+        self._choice = choice
         self.coords = dict(coords) if coords is not None else {}
         #: 用户/标定可以覆盖这几个框
         self.progress_box = tuple(self.coords.get("progress_box") or PROGRESS_BOX)
@@ -174,6 +179,14 @@ class RaceReader:
         * **蓝色高亮的那个 = 当前选中的路**；
         * 一屏可能有 **2 / 3 / 4 条**路可选 → 逐帧检测数量与位置，不写死。
 
+        ## 两个后端
+
+        `self._choice`（构造时注入）非空时**整段交给它** —— 那是 `vision.choice`
+        的后端（启发式 / ONNX 模型 / ultralytics）。返回的形状要一致：
+        `[{"xy": (x, y), "radius": r, "blue": bool, ...}, ...]`，
+        这样调用方（`read()` / `count_choice_icons()` / 精细扫描）一行都不用改。
+        **没注入就是原来那套 HoughCircles，逐字未改** ✓。
+
         ## 为什么用圆检测（HoughCircles）而不是"亮块分组"
 
         实测（真帧 `a9route/tests/fixtures/choice_band_2icons.png`，75% 处两个路标）：
@@ -190,6 +203,12 @@ class RaceReader:
         """
         import cv2
         import numpy as np
+        if self._choice is not None:
+            # 后端接管（模型或启发式后端）：它返回的就是同一个形状
+            try:
+                return list(self._choice.read(frame).icons)
+            except Exception:
+                return []
         x, y, w, h = self.choice_band
         band = frame[y:y + h, x:x + w]
         if band.size == 0:
@@ -255,8 +274,15 @@ class RaceReader:
             return 0
 
     # ---------------------------------------------------------------- 一帧
-    def read(self, frame=None, *, with_percent: bool = True) -> RaceState:
-        """读一帧。`with_percent=False` 时跳过「路程 NN%」那一次 OCR（省时间）。"""
+    def read(self, frame=None, *, with_percent: bool = True,
+             with_icons: bool = True) -> RaceState:
+        """读一帧。
+
+        * `with_percent=False`：跳过「路程 NN%」那一次 OCR（省时间）；
+        * `with_icons=False`：跳过选路路标那一次检测 —— 给**根本不用图标**的
+          调用方用（比如 `video.sample_video` 只要时间轴），
+          否则会白跑一遍检测（还可能是启发式的 HoughCircles）。
+        """
         frame = self.grab() if frame is None else frame
         st = RaceState()
         raw: list[str] = []
@@ -274,7 +300,7 @@ class RaceReader:
             # **只在"确认在比赛中"时数图标**（读得到路程百分比才算）——
             # 完赛界面/菜单上的一条亮横幅会被误计成 1 个（实测踩过）。
             # 所以 with_percent=False 时也不数（那种情况下我们不知道在不在比赛里）。
-            if st.percent is not None:
+            if with_icons and st.percent is not None:
                 st.icons = self.choice_icons(frame)
                 st.choice_icons = len(st.icons)
             else:

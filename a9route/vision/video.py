@@ -117,11 +117,17 @@ def sample_video(path: str | Path, *, every: float = 0.5, reader=None,
     if reader is None:
         from a9route.vision.hud import RaceReader
         reader = RaceReader()
+        own = True
+    else:
+        own = False
     out: list[Sample] = []
     for t, frame in iter_frames(path, every=every, max_seconds=max_seconds):
         percent = None
         try:
-            st = reader.read(frame)
+            # 这条路径**只要时间轴**（`cmd_video` 拼草稿用），不数路标 ——
+            # 不关掉的话每帧都会白跑一次选路检测（而且可能是启发式的 HoughCircles）✗
+            st = (reader.read(frame, with_icons=False) if own
+                  else reader.read(frame))
             percent = getattr(st, "percent", None)
             if percent is None and isinstance(st, dict):
                 percent = st.get("percent")
@@ -268,9 +274,69 @@ def extract_per_percent(path: str | Path, *, out_dir: str | Path,
     import cv2
     from a9route.vision.cues import CueDetector
     from a9route import config as _cfgmod
-    det = detector or CueDetector()
+    det = detector or None                # 没注入就先放空，等两个后端都造好再建（见下）
     out = Path(out_dir)
     out.mkdir(parents=True, exist_ok=True)
+    # 按键后端：**默认 heuristic 时完全不动**（`CueDetector` 走原来那套内置判据、
+    # `scan_fine` 走它原来的两行）；只有显式切到 onnx/ultralytics 才注入后端，
+    # 让粗扫和细扫用**同一个模型**（否则会出现"粗扫说按了、细扫说没按"）。
+    key_det = None
+    try:
+        from a9route.vision import keys as _keymod
+        # **每次都打一行**：用的到底是模型还是启发式、哪个模型、以及为什么
+        if progress:
+            progress("  " + _keymod.describe_backend())
+        _be, _mp, _ = _keymod.resolve_backend()
+        if _be != "heuristic":
+            key_det = _keymod.build_key_detector()
+        elif progress:
+            # 显式要了启发式就说清楚：本次判定**不是**模型给的（不让人以为在用模型）
+            progress("  ⚠️ 按键：你**显式**设了 key_backend=heuristic —— "
+                     "本次刹车/氮气由像素判据给出，不是模型")
+    except Exception as exc:
+        # ⚠️ **不吞**：判定必须来自模型。配置是 auto/onnx 却起不来 -> 直接把原因抛上去，
+        # 让 `analysis` 把它变成"这次分析无效"的 blocker（原来这里只打一行警告就
+        # 继续跑，等于悄悄用像素判据出一条路线 ✗）
+        raise RuntimeError(
+            "按键模型起不来（本项目的判定必须来自模型，不会退回启发式）："
+            "{0}: {1}".format(type(exc).__name__, exc)) from exc
+    # ---- 选路后端：同上，**粗扫和细扫共用同一个** ----
+    # 它注入到 `RaceReader`（`choice_icons()` 是选路唯一的出口），
+    # 所以 `read()` / `count_choice_icons()` / 精细扫描三处会**同时**换后端，
+    # 不会出现"粗扫用模型、细扫用圆检测"的分裂。
+    choice_det = None
+    try:
+        from a9route.vision import choice as _choicemod
+        if progress:
+            progress("  " + _choicemod.describe_choice_backend())
+        _cbe, _cmp, _ = _choicemod.resolve_backend()
+        if _cbe != "heuristic":
+            choice_det = _choicemod.build_choice_detector()
+        elif progress:
+            progress("  ⚠️ 选路：你**显式**设了 choice_backend=heuristic —— "
+                     "本次「有几条路可选」由 HoughCircles 给出，不是模型")
+    except Exception as exc:
+        # 同按键：不吞 —— 选路也必须由模型判（用户要求"不要再启发式判有几条路"）
+        raise RuntimeError(
+            "选路模型起不来（本项目的判定必须来自模型，不会退回圆检测）："
+            "{0}: {1}".format(type(exc).__name__, exc)) from exc
+    # ⚠️ **必须在这里**（两个后端都造好之后）才建 CueDetector：
+    # `CueDetector` 拿到 `choice` 之后才会用它造 `RaceReader`，
+    # 而 `RaceReader` 是**惰性创建**的 —— 先建 det 再补后端，
+    # 那个 reader 可能已经按"没后端"造好了，补的就被无声忽略 ✗
+    # （这正是之前 `cue.icons` 一直是 HoughCircles 的原因之一。）
+    if det is None:
+        det = CueDetector(key_detector=key_det, choice=choice_det)
+    elif isinstance(det, CueDetector):
+        if key_det is not None and det.key_detector is None:
+            det.key_detector = key_det
+        if choice_det is not None:
+            if det.reader is not None:
+                # 注入的 reader 自己带后端：**不能**再塞一个（会打架）
+                raise ValueError(
+                    "注入的 CueDetector 已经带了 reader，同时又要注入选路后端 —— "
+                    "两者的后端会不一致；要么别注入 reader，要么把后端交给 reader")
+            det.choice = choice_det
     # 精细扫描/交叉校验的参数：显式传参 > config.json（含环境变量）> 内置默认
     scan_cfg = (_cfgmod.load_config() or {}).get("scan", {})
     fine_kw = {
@@ -293,7 +359,8 @@ def extract_per_percent(path: str | Path, *, out_dir: str | Path,
 
     def _button_worker():
         try:
-            s, ic = scan_fine(path, progress=None, **fine_kw)
+            s, ic = scan_fine(path, progress=None, keys=key_det,
+                              choice=choice_det, **fine_kw)
             btn_result["samples"] = s
             btn_result["icons"] = ic
         except Exception as exc:
@@ -364,16 +431,23 @@ def extract_per_percent(path: str | Path, *, out_dir: str | Path,
             # **交叉校验**：选路必须"粗扫也看到 ≥2 个路标"才算（允许 ±`cross_tol` 个百分点）——
             # 用户 2026-09-13 报过"开头多出一次选路、实际只有 5 次" ✗，
             # 原因是精细扫描的圆检测偶发多认一个圆；两边都说是岔路口才认，误报几乎清零 ✓
+            #
+            # ⚠️ 2026-09-15 起粗扫也走**同一个选路后端**（见 `CueDetector(choice=...)`）——
+            # 以前这里拿启发式的 `cue.icons` 去卡模型的结论，等于**启发式一票否决模型**，
+            # 而且模型赢的地方（少报假岔路口 / 少漏真岔路口）全被这一票抹掉了 ✗
             coarse_choice = set()
             for s in shots:
                 icons = getattr(getattr(s, "cue", None), "icons", None) or []
                 if len(icons) >= 2:
                     coarse_choice.add(int(s.percent))
-            if coarse_choice:
-                kept = [it for it in kept
-                        if not (it.kind == "choice"
-                                and not any(abs(int(round(it.percent)) - p) <= cross_tol
-                                            for p in coarse_choice))]
+            kept, dropped = _cross_check_choices(kept, coarse_choice, cross_tol)
+            if dropped and progress:
+                # **不许静默丢**：被否掉的每一条都要看得见（否则"模型少报了一次"
+                # 到底是模型的问题还是被这一票否决的，永远查不出来）
+                progress("  ⚠️ 交叉校验否掉了 {0} 条选路（粗扫没在附近看到 ≥2 个路标）：{1}"
+                         .format(len(dropped),
+                                 "；".join("{0}%->{1}".format(it.percent, it.op)
+                                           for it in dropped)))
             kept = IT.merge_by_percent(kept)
             for s in shots:
                 s.intents = [it for it in kept if int(round(it.percent)) == int(s.percent)]
@@ -386,6 +460,32 @@ def extract_per_percent(path: str | Path, *, out_dir: str | Path,
             n_it = sum(len(getattr(s, "intents", []) or []) for s in shots)
             progress(f"  精细扫描判出 {n_it} 个操作（按目的：360/漂移/打断氮气/氮气/选路）")
     return shots
+
+
+def _cross_check_choices(kept: list, coarse_choice: set, cross_tol: int) -> tuple:
+    """选路的交叉校验：**粗扫和细扫都说是岔路口才算**。
+
+    返回 `(留下的, 被否掉的)` —— 调用方会把"否掉了哪些"打出来。
+
+    ⚠️ 两个前提，缺一个这条校验就是在**帮倒忙**：
+
+    1. 两边必须用**同一个后端**（粗扫的 `CueDetector(choice=...)` 和细扫的
+       `RaceReader(choice=...)` 是同一个实例）—— 否则是"启发式否决模型" ✗；
+    2. 被否掉的必须**能看见**（别再静默丢）。
+    """
+    if not coarse_choice:
+        return list(kept), []
+    out, dropped = [], []
+    for it in kept:
+        if it.kind != "choice":
+            out.append(it)
+            continue
+        p = int(round(it.percent))
+        if any(abs(p - c) <= cross_tol for c in coarse_choice):
+            out.append(it)
+        else:
+            dropped.append(it)
+    return out, dropped
 
 
 def _ops_from_window(frames: list) -> dict:
@@ -522,7 +622,8 @@ class ButtonEvent:
 
 
 def scan_fine(path: str | Path, *, gap: float = 0.12, hold: int = 1,
-              hold_brake: int = 2, icon_every: int = 2, progress=None
+              hold_brake: int = 2, icon_every: int = 2, progress=None,
+              keys=None, choice=None
               ) -> tuple[list[tuple[float, bool, bool]], list[tuple[float, tuple]]]:
     """**精细扫描**：逐帧看两个按键 + 每 `icon_every` 帧看一次选路路标。
 
@@ -535,15 +636,25 @@ def scan_fine(path: str | Path, *, gap: float = 0.12, hold: int = 1,
     为什么选路也要进精细扫描：路标出现/消失/改选的**时刻**很关键（用户要求
     "一直不变取第一次识别到、变了取第一次改变时"），粗扫 0.25s 一拍会漏掉改选 ✗。
 
-    ⚠️ 这里用的是 `cues.BRAKE_KEY_BOX` / `NITRO_KEY_BOX` 等**模块级常量**，
-    它们由 `a9route.config.apply()` 按 `config.json` 灌好 —— 所以本函数
+    ## 两个按键走**可替换的后端**（`keys=`）
+
+    `keys=None` 时按 `config.vision.key_backend` 造一个（`vision.keys`）：
+    默认 `heuristic` = **和以前逐字一致**；换成 `onnx`/`ultralytics`
+    就是"用 YOLOv8 模型识别刹车/氮气"（训练见 `a9route train`）。
+
+    ⚠️ 不传 `keys` 时用的 `cues.BRAKE_KEY_BOX` 等**模块级常量**由
+    `a9route.config.apply()` 按 `config.json` 灌好 —— 所以本函数
     **必须在 `apply()` 之后调用**（CLI / Web 入口都已代劳）。
     """
     import cv2
-    from a9route.vision.cues import (BRAKE_KEY_BOX, BRAKE_WHITE_THR, NITRO_KEY_BOX,
-                                  NITRO_RED_THR, brake_pressed, nitro_pressed)
     from a9route.vision.hud import RaceReader
-    reader = RaceReader()
+
+    if keys is None:
+        from a9route.vision import keys as _keys
+        keys = _keys.build_key_detector()
+    # 选路后端交给 `RaceReader`（`choice_icons()` 是选路唯一的出口）——
+    # `choice=None` 时它走原来那套 HoughCircles，行为逐字不变
+    reader = RaceReader(choice=choice)
     cap = cv2.VideoCapture(str(path))
     if not cap.isOpened():
         raise RuntimeError(f"打不开视频：{path}")
@@ -558,9 +669,8 @@ def scan_fine(path: str | Path, *, gap: float = 0.12, hold: int = 1,
             if not ok:
                 break
             t = i * dt
-            samples.append((round(t, 3),
-                            brake_pressed(frame, BRAKE_KEY_BOX) > BRAKE_WHITE_THR,
-                            nitro_pressed(frame, NITRO_KEY_BOX) > NITRO_RED_THR))
+            read = keys.read(frame)
+            samples.append((round(t, 3), bool(read.brake), bool(read.nitro)))
             if icon_every and i % icon_every == 0:
                 try:
                     found = reader.choice_icons(frame)
@@ -581,7 +691,7 @@ def scan_fine(path: str | Path, *, gap: float = 0.12, hold: int = 1,
     # 去抖**分通道**（用户 2026-09-13 报"17% 处两次氮气点击没识别到"后定的）：
     #  * 刹车：`hold_brake=2` —— 漂移是"按住"，要求连续两帧更稳 ✓；
     #  * 氮气：`hold=1` —— 实测那两次点击在 59 帧里只亮 2 帧（每次约 1 帧 = 33ms ✗），
-    #    "连续两帧"会把它整段抹掉 ✗✗；改成靠**阈值够高**（红>0.15 或 亮白>0.25）挡噪声 ✓。
+    #    "连续两帧"会把它整段抹掉 ✗✗；改成靠**阈值够高**挡噪声 ✓。
     out: list[tuple[float, bool, bool]] = []
     for k, (t, _b, _n) in enumerate(samples):
         vals = []
@@ -595,9 +705,10 @@ def scan_fine(path: str | Path, *, gap: float = 0.12, hold: int = 1,
 
 def scan_buttons(path: str | Path, *, gap: float = 0.12, hold: int = 2,
                  t_from: float | None = None, t_to: float | None = None,
-                 progress=None) -> list[tuple[float, bool, bool]]:
+                 progress=None, keys=None) -> list[tuple[float, bool, bool]]:
     """兼容旧接口：只要按键那一路（内部就是 `scan_fine`）。"""
-    s, _icons = scan_fine(path, gap=gap, hold=hold, icon_every=0, progress=progress)
+    s, _icons = scan_fine(path, gap=gap, hold=hold, icon_every=0, progress=progress,
+                          keys=keys)
     if t_from is not None or t_to is not None:
         s = [x for x in s
              if (t_from is None or x[0] >= t_from - 1.0)
@@ -766,7 +877,7 @@ def flat_route(ops: list[PercentShot]) -> str:
 
 
 def suggest_route(shots: list[PercentShot], *, timeline: Timeline | None = None,
-                  collapsed: bool = True) -> str:
+                  collapsed: bool = True, fine_scan_ran: bool = False) -> str:
     """把"每个百分点检测到的操作"写成**可以跑的路线脚本**。
 
     输出格式：
@@ -785,7 +896,10 @@ def suggest_route(shots: list[PercentShot], *, timeline: Timeline | None = None,
     * **独立短刹车脉冲 = 打断氮气**（写成很短的 `D:`）；
     * 氮气多次快速点击 -> **每百分比最多取两次**，并把**两次实测间隔**写进操作
       （`N:0:2:<间隔>`）；OCR 见到「完美氮气」时同样用实测间隔 ✓；
-    * 选路：**一直不变取第一次识别到**，**变了取第一次改变时**（不反复选）。
+    * 选路：**按"选路段"取结果**（用户 2026-09-15 的口径）——
+      持续没检测到路标 = 这一段结束；段内一直没变取第一次，
+      只有"选中"变了取最后一次变化时，**"几条路"变了立刻开新的一段**
+      （细节见 `core.intent.classify_choices`）。
     """
     intents = [it for s in shots for it in getattr(s, "intents", [])]
     if intents:
@@ -808,12 +922,18 @@ def suggest_route(shots: list[PercentShot], *, timeline: Timeline | None = None,
             if it.kind == "drift" and p in spin_pcts:
                 continue
             by_pct.setdefault(p, []).append(it.op)
-        extra: dict[int, list[str]] = {}
+        # ⚠️ 「关自动驾驶（`S:2000`）」**按用户口径保留，判据是 OCR 文字**（2026-09-15）：
+        # 用户明确说"touchdrive 还是用 ocr 识别" —— 所以它不是启发式（不是像素阈值猜的），
+        # 而是 PaddleOCR 读到「TOUCHDRIVE」判出来的，和「路程 NN%」同一条技术路线。
+        # 但它是路线里**唯一**不来自 YOLO 模型的操作，所以：
+        #   1. 路线正文里会**单独列一段**说明它来自 OCR（见下面的 `ocr_ops`）；
+        #   2. 只认 `auto` 这一类，别的东西不许从 `values` 里漏进路线。
+        ocr_ops: dict[int, list[str]] = {}
         for s in shots:
-            ops = [v for k, v in (s.values or {}).items() if k in ("auto",)]
-            if ops:
-                extra.setdefault(int(s.percent), []).extend(ops)
-        for p, ops in extra.items():
+            vals = [v for k, v in (s.values or {}).items() if k == "auto"]
+            if vals:
+                ocr_ops.setdefault(int(s.percent), []).extend(vals)
+        for p, ops in ocr_ops.items():
             by_pct.setdefault(p, []).extend(ops)
         data = ",".join(f"{p}," + "|".join(o for o in ops if o)
                         for p, ops in sorted(by_pct.items()) if any(ops))
@@ -822,7 +942,12 @@ def suggest_route(shots: list[PercentShot], *, timeline: Timeline | None = None,
             *head_scan,
             "# 判据：刹车键**成对脉冲(<200ms)=360**、**独立短脉冲=打断氮气**、按住=漂移；",
             "#       氮气键=正在点氮气（多次连点每百分比最多取两次 + 实测间隔）；",
-            "#       选路=上方圆形路标（不变取第一次、变了取第一次改变时）。",
+            "#       选路=上方圆形路标（**按「选路段」取**：持续没路标=这一段结束；"
+            "段内没变取第一次、只有选中变了取最后一次、选项数变了立刻开新段）。",
+            "# ⚠️ 上面这些都来自**模型**（keys.onnx / choice.onnx）＋信号形状规则；",
+            "#    只有「关自动驾驶 S:2000」例外 —— 它是 **OCR 文字判据**"
+            "（读到「TOUCHDRIVE」），",
+            "#    用户口径：touchdrive 就用 OCR 识别（不训模型）。详见下面单独那一段。",
             "# 同一个百分比上的多个操作用 | 连起来（= 同时执行）。",
             "# 用法：核对 -> python -m a9route check --text \"<上面那一行>\"",
             "",
@@ -832,6 +957,14 @@ def suggest_route(shots: list[PercentShot], *, timeline: Timeline | None = None,
         ]
         for it in intents:
             lines.append(f"# {it.describe()}")
+        lines.append("")
+        if ocr_ops:
+            lines.append("# ---- OCR 文字判据判出的操作（**不来自 YOLO 模型**）----")
+            for p in sorted(ocr_ops):
+                lines.append("#  {0:>3.0f}%  {1}   ← 判据：OCR 读到「TOUCHDRIVE」已关"
+                             .format(p, "|".join(ocr_ops[p])))
+        else:
+            lines.append("# ---- OCR 文字判据（TOUCHDRIVE）：这一局没判出「关自动驾驶」----")
         lines.append("")
         lines.append("# ---- 每个百分点的检测明细（核对用）----")
         for s in shots:
@@ -887,6 +1020,47 @@ def suggest_route(shots: list[PercentShot], *, timeline: Timeline | None = None,
             lines.append(f"# {s.describe()}")
         return "\n".join(lines) + "\n"
 
+    # ⚠️ **没有「模型判出的操作」时，分两种情况**（2026-09-15 按用户要求改：
+    # "不需要再用启发式判断有几条路可选或者别的任何操作"）：
+    #
+    # 1. `fine_scan_ran=True`（模型那一遍**跑过了**，只是这一局确实没有操作）——
+    #    那就是"没有操作"，正常给一条空路线 ✓（原来那种"没检测到任何操作"的提示保留）；
+    # 2. `fine_scan_ran=False`（模型那遍**根本没跑**）—— 原来会"退回窗口汇总估算"：
+    #    用顶部氮气槽青/「漂移NN米」文字/「完成360」文字拼一条路线出来，时长还是整数估算
+    #    （`D:4000` 这种）✗✗。那种"看着像路线、其实是另一套判据"的输出最坏：
+    #    它不报错、还会被当成真值。现在**直接拒绝**并说清怎么修。
+    if not fine_scan_ran:
+        raise RuntimeError(
+            "这次没有**模型判出的操作**：精细扫描（模型那一遍）没跑，因此**不给路线**。\n"
+            "  本项目现在只认模型判定：**不再**用「窗口汇总」那套像素/文字判据"
+            "估一条路线出来\n"
+            "  （顶部氮气槽青色、「漂移NN米」文字、「完成360度旋转」文字 —— "
+            "那些都不参与判定）。\n"
+            "  怎么修：① 确认 `analyze` 日志里有「精细扫描…」那一行；\n"
+            "          ② 确认两个模型都在：`a9route train models`"
+            "（按键 keys.onnx / 选路 choice.onnx）。")
+    lines = [
+        "# 由跑图视频**自动推断**的路线（判定全部来自模型，请核对后使用）",
+        "# 这一局**模型没判出任何操作** —— 所以正文是空的（不是「没扫描成功」）。",
+        "# 判据：按键=keys.onnx（刹车/氮气）、选路=choice.onnx（几个路标/选中第几个）、",
+        "#       「路程 NN%」=PaddleOCR；"
+        "360/漂移/双击 由**信号形状规则**推出（见 core/intent.py）。",
+        "",
+        "# （没检测到任何操作 —— 确认视频里是比赛画面、且 HUD 完整）",
+        "",
+        "# ---- 每个百分点的检测明细（核对用）----",
+    ]
+    for s in shots:
+        lines.append(f"# {s.describe()}")
+    return "\n".join(lines) + "\n"
+
+
+def _suggest_route_legacy_window(shots: list, *, collapsed: bool = True) -> str:
+    """**已停用的老路径**（窗口汇总估算）—— 保留只为让"我们删掉了什么"可查。
+
+    它用像素/文字判据估一条路线（`_ops_from_window`），
+    现在 `suggest_route()` 宁可报错也不用它（见上面那段说明）。
+    """
     ops = collapse_runs(shots) if collapsed else shots
     data = flat_route(ops)
     lines = [

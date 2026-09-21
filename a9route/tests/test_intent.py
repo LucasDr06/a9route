@@ -9,7 +9,8 @@
   T3 刹车按住 -> 漂移（实测时长）
   T4 氮气多次快速点击 -> 每百分比最多两次 + 实测间隔
   T5 氮气单击 / 长按
-  T6 选路：一直不变取第一次；变了取第一次改变时
+  T6 选路：按「选路段」取结果（段内没变取第一次 / 只有选中变了取最后一次 /
+     选项数变了立刻开新段 / 持续没检测到才算结束）
   T7 同一百分比上的氮气/选路各只留一条
 
     python -m a9route.tests.test_intent
@@ -82,28 +83,68 @@ def main() -> int:
     check("长按 -> N:0:k:100", len(ev) == 1 and ev[0].op.startswith("N:0:")
           and ev[0].op.endswith(":100"), str(ev))
 
-    print("\n=== T6 选路：不变取第一次，变了取第一次改变 ===")
+    print("\n=== T6 选路：按「选路段」取结果（用户 2026-09-15 的新口径）===")
     # 每个值都要连续 min_hold(4) 帧才认（真路标会持续几秒）
-    tl = [(1.0 + i * 0.03, (2, 1)) for i in range(5)] + [(1.2, None)] \
-        + [(2.0 + i * 0.03, (2, 2)) for i in range(5)] \
-        + [(2.2 + i * 0.03, (2, 3)) for i in range(5)] + [(2.4, None)]
+    # **持续没有路标**要连续 idle_hold 帧才算"选路结束"（默认 8）
+    GAP = [(x, None) for x in (1.15 + i * 0.03 for i in range(9))]      # 9 帧 > 8
+    SHORT_GAP = [(x, None) for x in (1.15 + i * 0.03 for i in range(3))]  # 3 帧 < 8
+
+    # 规则 3：一段里数量/选中都没变 -> 取第一次
+    tl = [(1.0 + i * 0.03, (2, 1)) for i in range(5)] + GAP
     ev = I.classify_choices(tl)
-    check("两次岔路口共 3 条（21 / 22 / 23）", len(ev) == 3,
-          str([(round(e.t0, 2), e.op) for e in ev]))
-    check(" 同一个值不重复选", [e.op for e in ev] == ["21", "22", "23"],
-          str([e.op for e in ev]))
-    check(" 取的是第一次识别到 / 第一次改变的时刻",
-          abs(ev[0].t0 - 1.0) < 1e-6 and abs(ev[1].t0 - 2.0) < 1e-6
-          and abs(ev[2].t0 - 2.2) < 1e-6, str([e.t0 for e in ev]))
-    same = I.classify_choices([(1.0 + i * 0.03, (2, 1)) for i in range(6)] + [(1.2, None)])
-    check(" 一直不变 -> 只一条，取第一次", len(same) == 1 and abs(same[0].t0 - 1.0) < 1e-6,
-          str(same))
+    check("段内一直没变 -> 一条，取**第一次**的结果和时刻",
+          len(ev) == 1 and ev[0].op == "21" and abs(ev[0].t0 - 1.0) < 1e-6
+          and "一直没变" in ev[0].note, str([(round(e.t0, 2), e.op) for e in ev]))
+
+    # 规则 4：数量没变、只有选中变了 -> 取**最后一次变化**
+    tl2 = [(2.0 + i * 0.03, (2, 1)) for i in range(5)] \
+        + [(2.2 + i * 0.03, (2, 2)) for i in range(5)] \
+        + [(2.4 + i * 0.03, (2, 3)) for i in range(5)] + GAP
+    ev2 = I.classify_choices(tl2)
+    check("数量没变、选中变了 -> 取**最后一次变化**的结果和时刻",
+          len(ev2) == 1 and ev2[0].op == "23" and abs(ev2[0].t0 - 2.4) < 1e-6
+          and "最后一次变化" in ev2[0].note,
+          str([(round(e.t0, 2), e.op) for e in ev2]))
+
+    # 规则 5：数量变了 -> **立刻**分段（不等"持续没有检测到"）
+    tl3 = [(3.0 + i * 0.03, (3, 3)) for i in range(5)] \
+        + [(3.2 + i * 0.03, (2, 1)) for i in range(5)] \
+        + [(3.4 + i * 0.03, (2, 2)) for i in range(5)] + GAP
+    ev3 = I.classify_choices(tl3)
+    check("数量变了 -> 立刻结束这一段、开新的一段（两条）",
+          len(ev3) == 2 and [e.op for e in ev3] == ["33", "22"],
+          str([(round(e.t0, 2), e.op) for e in ev3]))
+    check("  新的一段自己重新算「变化」（数量没变、选中变了 -> 取最后一次）",
+          abs(ev3[1].t0 - 3.4) < 1e-6, str([e.t0 for e in ev3]))
+
+    # 规则 1+2：持续没有检测到 -> 结束状态；下一次检测到 -> 新的一段
+    tl4 = [(4.0 + i * 0.03, (2, 1)) for i in range(5)] + GAP \
+        + [(4.6 + i * 0.03, (2, 2)) for i in range(5)] + GAP
+    ev4 = I.classify_choices(tl4)
+    check("持续没检测到 -> 结束这一段的判断；下一次检测到**从头开始**",
+          len(ev4) == 2 and [e.op for e in ev4] == ["21", "22"],
+          str([(round(e.t0, 2), e.op) for e in ev4]))
+    check("  两段各自取第一次（第二段不是「最后一次变化」）",
+          abs(ev4[1].t0 - 4.6) < 1e-6 and "一直没变" in ev4[1].note, ev4[1].note)
+
+    # 反例对照：**没到 idle_hold 的短暂空档**不该把一段拆开
+    tl5 = [(5.0 + i * 0.03, (2, 1)) for i in range(5)] + SHORT_GAP \
+        + [(5.4 + i * 0.03, (2, 2)) for i in range(5)] + GAP
+    ev5 = I.classify_choices(tl5)
+    check("空档没到 idle_hold -> **同一段**（数量没变、选中变了 -> 取最后一次）",
+          len(ev5) == 1 and ev5[0].op == "22", str([(round(e.t0, 2), e.op) for e in ev5]))
+
     # **稳定性闸**：只闪一两帧的不算（用户报过"实际 2 个却判成 3 个"、10 秒报 16 次 ✗）
     noisy = ([(0.0, (3, 3))]                                  # 只闪一帧
              + [(0.1 + i * 0.03, None) for i in range(4)]
-             + [(0.3 + i * 0.03, (2, 2)) for i in range(5)])   # 真岔路口
-    ev2 = I.classify_choices(noisy)
-    check("只闪一两帧的景色闪光不算选路", len(ev2) == 1 and ev2[0].op == "22", str(ev2))
+             + [(0.3 + i * 0.03, (2, 2)) for i in range(5)])
+    ev6 = I.classify_choices(noisy)
+    check("只闪一两帧的景色闪光不算选路", len(ev6) == 1 and ev6[0].op == "22", str(ev6))
+
+    # 参数来自 config / 显式传参：idle_hold 改小 -> 同一份时间轴会分成两段
+    ev7 = I.classify_choices(tl5, idle_hold=2)
+    check("idle_hold 可调：改小之后同一份时间轴就分成两段",
+          len(ev7) == 2, str([(round(e.t0, 2), e.op) for e in ev7]))
 
     print("\n=== T7 同一百分比上的氮气只留一条 ===")
     intents = [I.Intent(kind="nitro", t0=1.0, op="N:0:2:100", percent=13),

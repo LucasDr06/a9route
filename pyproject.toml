@@ -23,6 +23,20 @@ ocr = [
     "paddlepaddle>=3.0",
     "paddleocr>=3.0",
 ]
+# 运行时的按键模型推理（**推荐**）：只要 onnxruntime，不必装 torch。
+# 训练/导出要的是另一套（torch + ultralytics），见 TRAINING.md —— 
+# 训练通常放在另一个环境里做，别把它塞进运行环境。
+model = [
+    "onnxruntime>=1.17",
+]
+# 训练环境（**不是运行环境**）：torch 要选对 CUDA 版本，
+# RTX 50 系（sm_120）必须 cu128 及以上，否则 torch 认不出卡。
+#   pip install torch --index-url https://download.pytorch.org/whl/cu128
+#   pip install -i https://pypi.tuna.tsinghua.edu.cn/simple ultralytics
+train = [
+    "ultralytics>=8.3",
+    "pyyaml>=6.0",
+]
 dev = [
     "pytest>=8.0",
 ]
@@ -36,6 +50,7 @@ packages = [
     "a9route.core",
     "a9route.vision",
     "a9route.ocr",
+    "a9route.train",
     "a9route.web",
     "a9route.tests",
 ]

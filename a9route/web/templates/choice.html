@@ -1,0 +1,130 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>选路标注 · a9route</title>
+  <link rel="stylesheet" href="/static/style.css" />
+</head>
+<body>
+  <div class="conn-banner hidden" id="connBanner" role="alert"></div>
+  <div class="toasts" id="toasts" aria-live="polite"></div>
+
+  <header class="topbar">
+    <div class="brand">
+      <div class="brand-mark">a9</div>
+      <div class="brand-text">
+        <h1>选路标注</h1>
+        <p class="brand-sub">
+          岔路口逐帧三连问：**有没有选路 → 几个选项 → 选第几个**。
+          和 <a href="/dataset">数据集体检</a> 里那套「刹车 / 氮气」标注**完全分开**，
+          互不干扰 —— 那边管按键，这边管路线
+        </p>
+      </div>
+    </div>
+
+    <div class="device-box">
+      <div class="field-label">数据集</div>
+      <div class="device-row">
+        <select class="select" id="dsSelect" aria-label="数据集"></select>
+        <button class="btn btn-icon" id="dsRefreshBtn" type="button"
+                title="重新列出数据集" aria-label="重新列出">⟳</button>
+        <button class="btn btn-primary" id="refreshBtn" type="button">刷新</button>
+      </div>
+      <div class="device-source" id="dsHint">正在读取数据集…</div>
+    </div>
+
+    <div class="actions">
+      <a class="btn btn-ghost" href="/" title="回到「跑图视频 → 路线」">跑图 → 路线</a>
+      <a class="btn btn-ghost" href="/dataset" title="刹车 / 氮气的标注和标定体检（另一套，和本页无关）">数据集体检</a>
+      <button class="btn btn-ghost" id="exportBtn" type="button"
+              title="把本页的选路答案 + 手工改过的框存成 JSON（浏览器直接下载）">导出修正 JSON</button>
+    </div>
+  </header>
+
+  <main class="layout layout-single">
+    <section class="panel">
+      <div class="panel-head">
+        <h2 class="panel-title">逐帧标注选路</h2>
+        <div class="pill" id="framePill">—</div>
+        <span class="muted" id="frameNote"></span>
+      </div>
+
+      <div class="ds-toolbar">
+        <label class="field-label" for="fFilter">筛选</label>
+        <select class="select select-sm" id="fFilter">
+          <option value="all">全部</option>
+          <option value="pending">待标注</option>
+          <option value="reviewed">已标注</option>
+          <option value="has_choice">有选路</option>
+          <option value="no_choice">没有选路</option>
+          <option value="mismatch">答案和检测不一致</option>
+        </select>
+
+        <label class="field-label" for="fLimit">每页</label>
+        <select class="select select-sm" id="fLimit">
+          <option value="6">6</option>
+          <option value="12">12</option>
+          <option value="24" selected>24</option>
+          <option value="48">48</option>
+        </select>
+
+        <label class="field-label" for="fZoom"
+               title="band 图的**源分辨率**：图始终铺满卡片宽度，这只决定它有多清晰（1× = 按原始尺寸裁）">band 清晰度</label>
+        <select class="select select-sm" id="fZoom">
+          <option value="1">1×</option>
+          <option value="2" selected>2×</option>
+          <option value="3">3×</option>
+          <option value="4">4×</option>
+        </select>
+
+        <input class="input input-sm" id="fSearch" type="search"
+               placeholder="文件名/录像名" style="width:150px" />
+
+        <button class="btn btn-sm" id="fApply" type="button">应用 / 刷新</button>
+        <button class="btn btn-sm" id="fMarkPage" type="button"
+                title="把本页按当前答案标成「已标注」；没答过的帧用「检测结果」当默认答案">本页没问题</button>
+        <button class="btn btn-sm btn-ghost" id="fUndoMark" type="button"
+                title="撤销上一次标记（只认最近一次）">撤销上次标记</button>
+      </div>
+
+      <p class="muted ds-legend">
+        <b>每帧三个选择题</b>：① 有没有选路 → ② 几个选项（<span id="optRange">2/3/4</span>）→
+        ③ 选第几个（按<b>从左到右</b>编号）。
+        ②③ 只有答了「有」才点得动；第 ③ 题的按钮会跟着第 ② 题<b>当场长出来</b>。
+        <br>
+        band 图上：<span class="lg ch-lg-pick">红实线</span> = 你选中的那一个（第 ③ 题的答案）、
+        <span class="lg ch-lg-opt">黄实线</span> = 其余选项、
+        <span class="lg ch-lg-det">蓝虚线</span> = 服务器启发式检测到的圆。
+        <b>点 band 图可以改框</b>：点在框内 = 删掉，点在空白 = 加一个
+        （加到「几个选项」跟着变成框数），改过之后提交会带上 <code>boxes</code>。
+        <br>
+        每帧下面的小标签是后端算出来的提醒，<b>照它看最省事</b>：
+        <span class="ch-flag ch-flag-position_guessed">位置是猜的</span> = 检测到的图标不够，
+        后端<b>往右补了一个框</b>（补出来的位置不一定是真的，值得点开看一眼）·
+        <span class="ch-flag ch-flag-too_few">不算岔路口</span> = 图标少于最小选项数 ·
+        <span class="ch-flag ch-flag-no_selected">没标出选中</span> = 一个蓝高亮的都没有。
+        <br>
+        <b>翻页即复核</b>：离开本页时，<b>你答过的按你的答案</b>、
+        <b>没答过的按「检测结果」当默认答案</b>，一起提交为「已标注」——
+        对的帧不用逐个点。快捷键：<code>1/2/3/4</code> 几个选项 ·
+        <code>0</code> 没有选路 · <code>←/→ ↑/↓</code> 换帧 · <code>空格</code> 本帧没问题。
+      </p>
+
+      <div class="alert alert-error hidden" id="errorBox" role="alert"></div>
+      <div class="alert alert-warn hidden" id="pendingHint"></div>
+
+      <div class="ch-grid" id="chGrid"></div>
+
+      <div class="ds-pager" id="chPager"></div>
+    </section>
+  </main>
+
+  <div class="lightbox hidden" id="lightbox" role="dialog" aria-modal="true" aria-label="放大查看">
+    <img class="lightbox-img" id="lightboxImg" alt="" />
+    <div class="lightbox-cap" id="lightboxCap"></div>
+  </div>
+
+  <script src="/static/choice.js"></script>
+</body>
+</html>

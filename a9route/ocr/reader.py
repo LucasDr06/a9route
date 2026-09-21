@@ -24,20 +24,98 @@
 
 * 显式指定 `PP-OCRv5_mobile_det/rec`；此时 PaddleOCR 会**忽略** `lang`，
   中文识别靠模型自带字符集（实测能识别中文界面文字）。
-* 默认缓存在 `~/.paddlex`。若项目里有 `worktmp/paddlex` 就用它
-  （原项目是在受限沙箱里跑，工作区外的模型读不到）。
+* 默认缓存在 `~/.paddlex`。**若读不到它（受限环境/只读 HOME），就自动把
+  真正需要的那两个模型镜像到 `WORKTMP/paddlex`**，再把
+  `PADDLE_PDX_CACHE_HOME` 指过去 —— 见 `ensure_cache()`。
 * 没有 GPU 也能跑（`paddle` 的 CPU 版）；有 CUDA 的 paddle 会**自动走 GPU**，
   实测 OCR 本来就在 GPU 上。
+
+## ⚠️ 这条踩过一个大坑（2026-09-15）
+
+`~/.paddlex` 在工作区外。受限环境里**读不到模型文件** →
+`OcrReader.read()` 全程返回 `[]` → `RaceReader.percent` 恒为 `None` →
+粗扫一张图都存不下 → **路线是空的**。
+
+表现是「**识别不到任何操作**」，看起来像"检测模型没检出东西"，
+实际根因跟检测毫无关系 ✗✗。所以这里做了两件事：
+
+1. **自动镜像**（下面 `ensure_cache()`）：只抄真正要用的两个模型（约 21 MB；
+   默认缓存里另外 220 MB 是 server 版/方向分类/UVDoc，本模块已显式关掉）；
+2. **失败要响亮**：`analysis.analyze()` 在"一张图都没扫到"时会把
+   `OcrReader.last_error` 一起报出来并判这次分析**无效**，而不是给一条空路线。
 """
 from __future__ import annotations
 
 import contextlib
 import os
+import shutil
 import time
+from pathlib import Path
 
 import numpy as np
 
-from a9route.paths import ROOT
+#: OCR 真正需要的两个模型（就是 `_ensure()` 里显式指定的那两个）。
+#: **只镜像它们** —— 默认缓存 240 MB，其中 220 MB 是 `server` 版 det/rec、
+#: 方向分类、UVDoc 解畸变，而本模块把后面三个都关掉了，抄过来纯属浪费。
+NEEDED_MODELS = ("PP-OCRv5_mobile_det", "PP-OCRv5_mobile_rec")
+
+
+def cache_dir() -> Path:
+    """本项目自己的 OCR 缓存目录（**工作区内**，受限环境也读得到）。"""
+    from a9route import paths
+    return paths.WORKTMP_DIR / "paddlex"
+
+
+def default_cache_dir() -> Path:
+    """paddlex 的默认缓存（`PADDLE_PDX_CACHE_HOME` 或 `~/.paddlex`）。"""
+    env = os.environ.get("PADDLE_PDX_CACHE_HOME")
+    if env:
+        return Path(env)
+    return Path.home() / ".paddlex"
+
+
+def _models_present(root: Path | None) -> bool:
+    """这个目录里那两个模型齐不齐。**只回答是/否，永远不抛。**"""
+    return _probe(root) == "ok"
+
+
+def _probe(root: Path | None) -> str:
+    """模型缓存的状态：`"ok"` / `"missing"`（真没有）/ `"denied"`（有但读不到）。
+
+    ⚠️ **必须把"没有"和"读不到"分开** —— 这两种情况的处置完全相反：
+
+    * `missing` -> 首次运行会联网下载（或者用户得把模型放进去）；
+    * `denied`  -> 模型**就在那儿**，只是当前环境读不到，**镜像一份到工作区**即可。
+
+    第一版没分，于是受限环境（`is_file()` 直接抛 `PermissionError`）被误判成
+    "找不到 OCR 模型"，给出的提示完全是错的 ✗✗。
+    """
+    if root is None:
+        return "missing"
+    try:
+        names = set(os.listdir(root / "official_models"))
+    except FileNotFoundError:
+        return "missing"
+    except OSError:
+        return "denied"            # 目录在，但列不出来
+    if not all(m in names for m in NEEDED_MODELS):
+        return "missing"
+    return "ok" if _readable(root) else "denied"
+
+
+def _readable(root: Path) -> bool:
+    """真的**试读**一下关键文件。
+
+    ⚠️ 不要用 `os.access()` 判断 —— 受限沙箱下它可能说"可读"，
+    真 open 才抛 `PermissionError`（实测过）。**能不能读，只有读一次才知道。**
+    """
+    try:
+        with open(root / "official_models" / NEEDED_MODELS[0] / "inference.yml",
+                  "rb") as fh:
+            fh.read(16)
+        return True
+    except OSError:
+        return False
 
 
 @contextlib.contextmanager
@@ -97,6 +175,78 @@ def _silenced_output():
                         handler.setLevel(prev[k])
 
 
+def ensure_cache(*, progress=None, force: bool = False) -> Path | None:
+    """保证 OCR 读得到模型；读不到就把需要的两个模型**镜像**到工作区内。
+
+    返回**要设给 `PADDLE_PDX_CACHE_HOME` 的目录**，或 `None`（= 用默认的就行）。
+
+    决策顺序（**正常环境一分钱不花**）：
+
+    1. 用户显式设过 `PADDLE_PDX_CACHE_HOME` -> 完全听他的，不镜像；
+    2. 工作区内的 `WORKTMP/paddlex` 已经齐了 -> 用它；
+    3. 默认缓存（`~/.paddlex`）**真的读得到** -> 什么都不做，用默认的；
+    4. 默认缓存**读不到**（受限环境）-> 把两个模型抄进工作区，用它。
+
+    `force=True`：**不管读不读得到，都抄一份到工作区** ——
+    `a9route ocr cache` 用它：在能读到的环境（普通终端）里先抄好，
+    之后受限环境（比如被沙箱限制的服务进程）就也能用了。
+
+    ⚠️ 第 4 步在"读不到"的环境里**本身也会失败**（连复制源都读不了）。
+    这时给的是**能直接照做**的话：在普通终端里跑一次 `a9route ocr cache`。
+    """
+    explicit = os.environ.get("PADDLE_PDX_CACHE_HOME")
+    if explicit and not force:
+        return Path(explicit)
+
+    local = cache_dir()
+    if _models_present(local) and not force:
+        return local
+
+    default = default_cache_dir()
+    state = _probe(default)
+    if not force:
+        if state == "ok":
+            return None                 # 默认那份能用，不动它
+        if state == "missing":
+            raise RuntimeError(
+                "找不到 OCR 模型：`{0}` 里没有 {1}。\n"
+                "  · 首次运行会自动联网下载；\n"
+                "  · 离线/受限环境请手工把这两个模型目录放进去。"
+                .format(default, " / ".join(NEEDED_MODELS)))
+    elif state == "missing":
+        raise RuntimeError(
+            "找不到 OCR 模型：`{0}` 里没有 {1} —— 没有可抄的源。"
+            .format(default, " / ".join(NEEDED_MODELS)))
+
+    # 镜像到工作区
+    if progress:
+        progress("  镜像 OCR 模型 {0} -> {1} …".format(default, local))
+    local.mkdir(parents=True, exist_ok=True)
+    try:
+        for m in NEEDED_MODELS:
+            src = default / "official_models" / m
+            dst = local / "official_models" / m
+            if (dst / "inference.yml").is_file() and not force:
+                continue
+            if dst.is_dir():
+                shutil.rmtree(dst, ignore_errors=True)
+            shutil.copytree(src, dst)
+    except OSError as exc:
+        raise RuntimeError(
+            "OCR 模型在 {0}，但**当前环境读不到**，镜像也失败：{1}: {2}\n"
+            "  照这个做一次就能修好（只需做一次，抄好之后哪儿都能用）：\n"
+            "    在**普通终端**里跑： a9route ocr cache\n"
+            "  或手工把那两个目录复制过去：\n"
+            "    {3}\\official_models\\{4}\n"
+            "      -> {5}\\official_models\\\n"
+            .format(default, type(exc).__name__, exc, default,
+                    " 和 ".join(NEEDED_MODELS), local)) from exc
+    if progress:
+        progress("  OCR 模型已在工作区里（{0}，约 21 MB）".format(
+            " / ".join(NEEDED_MODELS)))
+    return local
+
+
 class OcrReader:
     """PaddleOCR 懒加载封装：首次调用才初始化（初始化要几秒），之后复用。
 
@@ -104,19 +254,22 @@ class OcrReader:
     每次新建 PaddleOCR 实例会重复几秒开销，所以这里缓存实例。
     """
 
-    def __init__(self):
+    def __init__(self, progress=None):
         self._ocr = None
         self.load_seconds = 0.0
         self.last_error: str | None = None
         self.calls = 0
+        #: 镜像模型缓存时给人看的一句话（可选）
+        self._progress = progress
 
     def _ensure(self):
         if self._ocr is None:
             os.environ.setdefault("PADDLE_PDX_DISABLE_MODEL_SOURCE_CHECK", "True")
-            # 项目内有一份模型缓存就优先用它 —— 受限沙箱里读不到 ~/.paddlex
-            local_cache = ROOT / "worktmp" / "paddlex"
-            if local_cache.is_dir():
-                os.environ.setdefault("PADDLE_PDX_CACHE_HOME", str(local_cache))
+            # 模型缓存：工作区内有一份就用它；默认那份读不到就自动镜像一份进来。
+            # （受限环境里读不到 ~/.paddlex —— 那会让整个粗扫静默地一张图都存不下）
+            chosen = ensure_cache(progress=self._progress)
+            if chosen is not None:
+                os.environ["PADDLE_PDX_CACHE_HOME"] = str(chosen)
             # **import 和创建都要包进静音上下文**（只包创建会漏掉 import 时那一行 —— 实测踩过）
             with _silenced_output():
                 from paddleocr import PaddleOCR

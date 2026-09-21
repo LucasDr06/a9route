@@ -1,5 +1,8 @@
 # -*- coding: utf-8 -*-
-"""本地 Web 窗口（Flask）—— **一页就干一件事：拖视频进去，出来一条路线。**
+"""本地 Web 窗口（Flask）—— **两个页面，各干一件事**。
+
+* `/` —— 拖视频进去，出来一条路线；
+* `/dataset` —— **数据集体检 / 逐帧对照**（标注 ↔ 标定 ↔ 判据 对不对得上）。
 
 只在 `127.0.0.1` 上监听：这个窗口会把你上传的录像写到磁盘、跑几十秒的分析，
 不属于"对外服务"。端口默认 **8790**（换端口用 `--port`）。
@@ -8,7 +11,8 @@
 
 | 方法 | 路径 | 说明 |
 |---|---|---|
-| GET  | `/` | 页面 |
+| GET  | `/` | 跑图页面 |
+| GET  | `/dataset` | **数据集体检页面** |
 | GET  | `/api/version` | 版本、项目根、配置文件、本次生效的配置 |
 | GET  | `/api/videos` | 可分析的视频（`output/` + `A9ROUTE_VIDEO_DIR` 里的目录） |
 | POST | `/api/analyze` | 启动分析：上传文件（multipart 字段 `video`）**或** JSON `{path}`；可选 `every` / `max_seconds` / `set` |
@@ -16,6 +20,9 @@
 | GET  | `/api/status?job=` | 进度 / 路线 / 逐百分点明细（前端轮询） |
 | GET  | `/media/<job>/<name>` | 某百分点截图（PNG） |
 | GET  | `/api/route?job=` | 把该任务的完整路线文本下载下来 |
+
+数据集体检那几个接口在 `web/dataset.py`（Flask Blueprint），
+业务逻辑在 `train/audit.py`（CLI 的 `a9route train audit` 用同一份）。
 
 分析要跑几十秒，所以放**后台线程**、前端轮询 —— 进度靠"覆盖 N 个百分点"这句。
 """
@@ -46,6 +53,14 @@ def create_app() -> Flask:
     app.config["JSON_AS_ASCII"] = False
     app.json.ensure_ascii = False
     paths.ensure_dirs()
+
+    # 数据集体检页面（/dataset + /api/dataset/*）—— 单独一个 Blueprint
+    from a9route.web.dataset import bp as dataset_bp
+    app.register_blueprint(dataset_bp)
+
+    # 选路标注页面（/choice + /api/choice/*）—— **和刹车/氮气那页分开**
+    from a9route.web.choice import bp as choice_bp
+    app.register_blueprint(choice_bp)
 
     jobs: dict[str, dict] = {}
     lock = threading.Lock()
@@ -122,6 +137,10 @@ def create_app() -> Flask:
             job["button_events"] = rep.button_events
             job["intents"] = rep.intents
             job["seconds"] = round(rep.seconds, 2)
+            # **这次分析无效的原因**（例如 OCR 读不到模型）—— 前端要当**错误**显示，
+            # 否则用户看到的只是一条空路线，会跑去查检测/阈值
+            job["blocker"] = rep.blocker
+            job["warnings"] = list(rep.warnings)
             job["state"] = "done"
             job["message"] = (
                 f"完成：{len(rep.shots)} 张截图，"
@@ -192,6 +211,58 @@ def create_app() -> Flask:
         return jsonify(job=jid, name=jobs[jid]["name"], every=every,
                        max_seconds=max_seconds, set=sets or {})
 
+    @app.get("/api/config")
+    def api_config_get():
+        """**可编辑的判据参数表**（给前端画滑块/输入框用）。
+
+        ⚠️ 返回的不只是值：每项还带 `min/max/step`、中文名、内置默认值、
+        以及"**这一项在当前后端下是否真的生效**"（`applies` / `note`）——
+        最坑的一类误导就是"调了没反应"（比如当前用模型，
+        而调的是只对 HoughCircles 生效的参数）。
+        """
+        from a9route.web import config_ui as CU
+        from a9route.vision import choice as VC
+        from a9route.vision import keys as VK
+
+        backends = {}
+        for task, mod in (("keys", VK), ("choice", VC)):
+            try:
+                backends[task] = mod.resolve_backend()[0]
+            except Exception as exc:                   # noqa: BLE001
+                backends[task] = "起不来（{0}）".format(type(exc).__name__)
+        data = CU.payload(backends=backends)
+        data["backends"] = backends
+        return jsonify(data)
+
+    @app.post("/api/config")
+    def api_config_post():
+        """改参数并**落盘到 config.json**（下一次分析立刻生效）。
+
+        请求体：`{"set": {"scan.choice_idle_hold": 12, ...}}`
+        或 `{"reset": ["scan.choice_idle_hold"]}` / `{"reset": "all"}`。
+
+        ⚠️ 校验在**后端**（前端能绕过）；有一项不合格就**一个都不写** ——
+        不留半套配置（那种状态最难查）。
+        """
+        from a9route.web import config_ui as CU
+
+        data = request.get_json(silent=True)
+        if not isinstance(data, dict):
+            return jsonify(error="要 POST 一个 JSON：{set:{...}} 或 {reset:[...]}"), 400
+        try:
+            if "reset" in data:
+                r = data.get("reset")
+                keys = None if r in ("all", "*", True) else list(r or [])
+                res = CU.reset(keys)
+            else:
+                res = CU.save(data.get("set") or {})
+        except Exception as exc:                       # noqa: BLE001
+            return jsonify(error="{0}: {1}".format(type(exc).__name__, exc)), 400
+        if not res.get("ok"):
+            return jsonify(error="；".join(res.get("errors") or ["改参数失败"]),
+                           errors=res.get("errors")), 400
+        return jsonify(result=res)
+
     @app.get("/api/jobs")
     def api_jobs():
         with lock:
@@ -206,7 +277,8 @@ def create_app() -> Flask:
         if not job:
             return jsonify(error="没有这个分析任务"), 404
         out = {k: job.get(k) for k in ("id", "name", "state", "message", "error",
-                                       "route", "flat", "video")}
+                                       "route", "flat", "video", "blocker",
+                                       "warnings")}
         out["shots"] = job.get("shot_rows") or []
         out["button_events"] = job.get("button_events", 0)
         out["intents"] = job.get("intents", 0)

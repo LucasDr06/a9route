@@ -323,6 +323,167 @@ def t7_choice_icons():
           str(cfgmod.get(cfgmod.load_config(), "vision__choice_min_r")))
 
 
+def t7b_one_backend():
+    """**粗扫和细扫必须是同一个选路后端**（2026-09-15 踩的那个分裂）。
+
+    实测背景：`CueDetector` 以前自己造一个裸 `RaceReader()`，于是粗扫的
+    `cue.icons` 一直是 HoughCircles，而细扫早就换成模型了 ——
+    而 `cue.icons` 被拿去**交叉校验**（粗扫也看到 ≥2 个路标才认这次选路），
+    等于**启发式能一票否掉模型判出来的选路**，模型赢的地方全被抹掉 ✗✗。
+    （用 `worktmp/probe/who_decides_route.py` 数出来的：落到 HoughCircles 35 次。）
+    """
+    print("\n=== T7b 选路只该有一个后端（粗扫/细扫不许分裂）===")
+    import numpy as np
+    from a9route.vision import video as V
+    from a9route.vision.cues import CueDetector
+    from a9route.vision.hud import RaceReader
+
+    frame = np.full((720, 1280, 3), 20, dtype=np.uint8)
+
+    class _FakeChoice:
+        """假后端：永远报"3 个路标、选中第 2 个"。纯黑帧上 HoughCircles 什么都找不到，
+        所以只要拿到 3 个图标，就证明用的是**这个后端**而不是圆检测 ✓"""
+        name = "fake"
+        calls = 0
+
+        def read(self, f):
+            type(self).calls += 1
+            from a9route.vision.choice import ChoiceRead
+            icons = [{"xy": (500 + 60 * i, 127), "radius": 30, "blue": (i == 1),
+                      "blue_ratio": 0.9 if i == 1 else 0.0} for i in range(3)]
+            return ChoiceRead(True, 3, 2, icons)
+
+    fake = _FakeChoice()
+
+    # ① `CueDetector(choice=...)` 造 reader 时**必须把后端带进去**。
+    #    这里把 `RaceReader` 换成一个"记账"的替身，直接看它收到了什么参数 ——
+    #    （真实 reader 的 percent 来自 OCR，测试环境里不好造，所以分两步测。）
+    import a9route.vision.hud as _hud
+    made: dict = {}
+    real_rr = _hud.RaceReader
+
+    class _RecRR:
+        def __init__(self, **kw):
+            made.update(kw)
+
+        def read(self, frame, **kw):
+            from a9route.vision.hud import RaceState
+            st = RaceState()
+            st.percent = 37.0
+            st.icons = list(fake.read(frame).icons)
+            return st
+
+    _hud.RaceReader = _RecRR
+    try:
+        cue, _pct = CueDetector(choice=fake, reader_texts=lambda f, b: []).detect(
+            frame)
+    finally:
+        _hud.RaceReader = real_rr
+    check("**CueDetector 造 reader 时把选路后端带进去了**（不是裸 reader）",
+          made.get("choice") is fake, str(made))
+    check("  粗扫的 cue.icons 因此来自后端（3 个），而不是 HoughCircles",
+          len(cue.icons) == 3 and cue.choice == (3, 2),
+          "icons={0} choice={1}".format(len(cue.icons), cue.choice))
+
+    # ② 端到端：真 `RaceReader`（喂假 OCR 文本 + 注入后端）交给 CueDetector
+    r_inj = RaceReader(reader=lambda f, b: ["37%"], choice=fake, grab=lambda: None)
+    r_inj.progress_box = (0, 0, 10, 10)
+    cue2, pct2 = CueDetector(reader=r_inj, reader_texts=lambda f, b: []).detect(frame)
+    check("注入的 reader（自带后端）也能一路走到 cue.icons",
+          pct2 == 37.0 and len(cue2.icons) == 3 and cue2.choice == (3, 2),
+          "pct={0} icons={1}".format(pct2, len(cue2.icons)))
+    check("纯黑帧 + 没注入后端时，圆检测什么都找不到（对照组）",
+          CueDetector(reader=RaceReader(reader=lambda f, b: ["37%"],
+                                        grab=lambda: None),
+                      reader_texts=lambda f, b: []).detect(frame)[0].choice is None, "")
+
+    try:
+        CueDetector(reader=RaceReader(), choice=fake)
+        check("  同时给 reader 和 choice -> 直接报错（不许悄悄一边赢）", False, "没报错")
+    except ValueError as exc:
+        check("  同时给 reader 和 choice -> 直接报错（不许悄悄一边赢）",
+              "打架" in str(exc), str(exc)[:60])
+
+    # `read(with_icons=False)`：只要时间轴的调用方不该白跑一遍路标检测
+    class _Counter:
+        name = "counter"
+
+        def __init__(self):
+            self.calls = 0
+
+        def read(self, f):
+            self.calls += 1
+            from a9route.vision.choice import ChoiceRead
+            return ChoiceRead(True, 2, 1, [{"xy": (600, 127), "radius": 28,
+                                            "blue": True, "blue_ratio": 0.8}])
+
+    cnt = _Counter()
+    r2 = RaceReader(choice=cnt, reader=lambda f, b: ["37%"], grab=lambda: None)
+    r2.progress_box = (0, 0, 10, 10)
+    st = r2.read(frame, with_icons=False)
+    check("`read(with_icons=False)` 不数路标（也不叫后端）",
+          st.icons == [] and st.choice_icons == 0 and cnt.calls == 0, str(cnt.calls))
+    st2 = r2.read(frame, with_icons=True)
+    check("  默认还是数（with_icons=True）", cnt.calls == 1, str(cnt.calls))
+
+    # 交叉校验的**纯函数**：留谁、丢谁，而且必须把丢掉的返回出来（不许静默）
+    class _It:
+        def __init__(self, kind, percent, op="21"):
+            self.kind, self.percent, self.op = kind, percent, op
+
+    kept_in = [_It("choice", 40), _It("choice", 55), _It("nitro", 55)]
+    out, dropped = V._cross_check_choices(kept_in, {40, 41}, 1)
+    check("交叉校验：粗扫看到的留、没看到的丢",
+          [it.kind for it in out] == ["choice", "nitro"]
+          and len(dropped) == 1 and dropped[0].percent == 55,
+          "out={0} dropped={1}".format([it.percent for it in out],
+                                       [it.percent for it in dropped]))
+    check("  非选路的操作永远不受影响",
+          all(it.kind != "choice" or it.percent in (40,) for it in out), "")
+    out2, dropped2 = V._cross_check_choices(kept_in, set(), 1)
+    check("  粗扫一个都没看到时**不否任何东西**（不做无依据的否决）",
+          len(out2) == 3 and not dropped2, "")
+
+    # ③ 路线**只认模型判出的操作**（2026-09-15 用户要求：不要再启发式判任何操作）
+    from a9route.vision.video import PercentShot
+    shot_no_ops = [PercentShot(percent=5.0, t=1.0, path="", op="", cue=None)]
+    try:
+        V.suggest_route(shot_no_ops, fine_scan_ran=False)
+        check("**细扫没跑 -> 拒绝出路线**（不再用窗口汇总估算）", False, "居然给了路线")
+    except RuntimeError as exc:
+        check("**细扫没跑 -> 拒绝出路线**（不再用窗口汇总估算）",
+              "不给路线" in str(exc) and "模型" in str(exc), str(exc)[:60])
+    ok_text = V.suggest_route(shot_no_ops, fine_scan_ran=True)
+    check("  细扫跑过、只是这局没操作 -> 给一条**空**路线（这是合法结论）",
+          "没检测到任何操作" in ok_text
+          and not [ln for ln in ok_text.splitlines()
+                   if ln.strip() and not ln.startswith("#")],
+          ok_text.splitlines()[1][:50])
+    check("  老路径（窗口汇总估算）**还在，但已经不参与出路线**了",
+          callable(V._suggest_route_legacy_window), "")
+
+    # ④ 「关自动驾驶 S:2000」= **OCR 文字判据**，用户口径：保留（不训模型）。
+    #    它是路线里唯一不来自 YOLO 的操作，所以必须**在正文里标明来源**，
+    #    而且**只许 `auto` 这一类**从粗扫漏进路线（别的粗扫结果一律不许）。
+    from a9route.core.intent import Intent
+    s_ocr = PercentShot(percent=50.0, t=30.0, path="", op="S:2000",
+                        values={"auto": "S:2000"}, kinds=["auto"])
+    s_leak = PercentShot(percent=51.0, t=30.5, path="", op="D:4000",
+                         values={"drift": "D:4000"}, kinds=["drift"])
+    s_ocr.intents = [Intent(kind="nitro", t0=30.0, dur=0.1, op="N:100:1:100",
+                            percent=50.0)]
+    txt = V.suggest_route([s_ocr, s_leak], fine_scan_ran=True)
+    body = [ln for ln in txt.splitlines() if ln.strip() and not ln.startswith("#")]
+    check("**OCR 判出的关自动驾驶（S:2000）会进路线**（用户口径：touchdrive 用 OCR）",
+          len(body) == 1 and "S:2000" in body[0], str(body))
+    check("  同一百分点上和模型判出的操作并用 `|` 连起来",
+          "N:100:1:100|S:2000" in body[0] or "S:2000|N:100:1:100" in body[0], body[0])
+    check("  正文里**标明它来自 OCR**（不让人以为是模型判的）",
+          "OCR" in txt and "TOUCHDRIVE" in txt, "")
+    check("  粗扫的其它结果（drift/spin…）**不许漏进路线**",
+          "D:4000" not in body[0], body[0])
+
+
 def t8_hud_parse():
     print("\n=== T8 比赛内读数的解析 ===")
     import numpy as np
@@ -467,6 +628,38 @@ def t10_end_to_end():
     check(" 逐帧认出了氮气按下的帧", n_nitro >= 3, str(n_nitro))
     check(" 顺带看的路标也产出了时间线", len(icons) > 0, str(len(icons)))
 
+    # ⚠️ **按键后端是可替换的**（`vision.keys`：heuristic / onnx / ultralytics）。
+    # 这里注入一个"永远说按下"的假后端，证明 `scan_fine` 真的走注入的那条路。
+    # 为什么必须有这条：默认后端改成 `auto` 之后，**端到端那条测试会随磁盘上
+    # 有没有模型而变**（`tests/__init__.py` 已经把它钉成 heuristic 了）。
+    # 有了这条，模型接入的**接线**在任何环境里都被覆盖着 ✓
+    class _AlwaysOn:
+        name = "always-on"
+
+        def read(self, frame):
+            from a9route.vision.keys import KeyRead
+            return KeyRead(brake=True, nitro=True, info={})
+
+    s2, _ = V.scan_fine(path, hold=1, hold_brake=1, icon_every=0,
+                        keys=_AlwaysOn())
+    check("scan_fine 用**注入的按键后端**（模型接入的接线回归）",
+          len(s2) > 0 and all(b and n for _t, b, n in s2),
+          "{0} 帧，全 True = {1}".format(
+              len(s2), all(b and n for _t, b, n in s2)))
+
+    class _AlwaysOff:
+        name = "always-off"
+
+        def read(self, frame):
+            from a9route.vision.keys import KeyRead
+            return KeyRead(brake=False, nitro=False, info={})
+
+    s3, _ = V.scan_fine(path, hold=1, hold_brake=1, icon_every=0,
+                        keys=_AlwaysOff())
+    check("  换成「永远没按」的后端 -> 一个都不报（说明真在用注入的那个）",
+          len(s3) > 0 and not any(b or n for _t, b, n in s3),
+          "{0} 帧".format(len(s3)))
+
     # 生成路线：用 shots 的时间轴把按键时刻落回百分比
     tl = V.build_timeline([V.Sample(t=s.t, percent=s.percent) for s in shots])
     ev = V.attach_events(shots, V.button_events(samples))
@@ -544,6 +737,7 @@ def main() -> int:
     t5_button_events()
     t6_key_fixtures()
     t7_choice_icons()
+    t7b_one_backend()
     t8_hud_parse()
     t9_spin_blocks_drift()
     t10_end_to_end()

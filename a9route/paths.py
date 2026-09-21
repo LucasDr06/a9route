@@ -20,6 +20,26 @@ ROUTES_DIR = ROOT / "routes"
 #: 离线测试用的小帧样本（PNG）
 FIXTURES_DIR = ROOT / "a9route" / "tests" / "fixtures"
 
+# ---- 按键模型（YOLOv8）----
+#: 训练数据集（**人工复核过的标注在这里，别当垃圾删**）。
+#: 帧是 JPEG、一副几分钟的录像抽出来就是几百 MB ~ 几 GB，所以不入库；
+#: 但和 `worktmp/` 不同，**这个目录不是"随时可删"的**。
+#: 可用环境变量 `A9ROUTE_DATASETS` 指到别的盘（数据集大了以后很常用）。
+DATASETS_DIR = Path(os.environ.get("A9ROUTE_DATASETS") or (ROOT / "datasets"))
+#: 模型产物：`keys.onnx`（运行时用）、`keys.pt`（训练产物）、`runs/`（训练日志与权重）。
+#: 权重体积大、不入库，但同样**不是垃圾**。
+MODELS_DIR = Path(os.environ.get("A9ROUTE_MODELS") or (ROOT / "models"))
+#: 导出后运行时默认加载的模型（`config.vision.key_model` 为空时就用它）
+DEFAULT_KEY_MODEL = MODELS_DIR / "keys.onnx"
+#: **选路**模型（`config.vision.choice_model` 为空时用它）。
+#: ⚠️ 和 `DEFAULT_KEY_MODEL` 一样，测试里**必须钉住**（指到不存在的文件）——
+#: 否则"这台机器上恰好训过选路模型"会让测试结果跟着环境变
+#: （实测：加了这个默认路径之后，`test_webvideo` 因为自动加载真模型而红了）。
+DEFAULT_CHOICE_MODEL = MODELS_DIR / "choice.onnx"
+#: YOLOv8 预训练权重放这里（`yolov8n.pt` 这类）—— 本机 github 被墙，
+#: 下载放在这儿之后 `a9route train run` 会自己找到它（见 TRAINING.md）
+WEIGHTS_DIR = MODELS_DIR / "weights"
+
 # ---- 运行产物（已 gitignore，随时可删）----
 OUTPUT_DIR = ROOT / "output"
 #: 运行产物目录。默认项目内 `worktmp/`，可用 **`A9ROUTE_WORKTMP`** 指到别处 ——
@@ -68,3 +88,13 @@ def ensure_dirs(verbose: bool = False) -> None:
             ) from exc
     if verbose:
         print(f"运行目录: {WORKTMP_DIR}")
+
+
+def ensure_model_dirs() -> None:
+    """建好**模型/数据集**目录（和运行产物分开：这两个不是"随时可删"的）。
+
+    训练相关目录可能被 `A9ROUTE_DATASETS` / `A9ROUTE_MODELS` 指到别的盘，
+    所以单独一个函数 —— `ensure_dirs()` 那条路不该因为数据集盘没挂就整个失败。
+    """
+    for d in (DATASETS_DIR, MODELS_DIR, WEIGHTS_DIR):
+        d.mkdir(parents=True, exist_ok=True)

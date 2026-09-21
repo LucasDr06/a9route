@@ -7,6 +7,30 @@ __pycache__/
 
 # ---- 本地私有设置（不入库）----
 .local/
+# `config.json` 是**这台机器上**的调参 + 绝对路径（`key_model: D:\...\keys.onnx`）——
+# 入库会让别人（以及你换机器之后）拿到一堆只对本机有意义的值。
+# 内置默认值在 `a9route/config.py` 的 `DEFAULTS` 里；
+# 网页「参数」弹窗就是改这个文件（保存即写盘），要留档就单独存一份 ✓
+config.json
+# 测试/探针的临时配置（`tests/__init__.py` 现在会写到系统临时目录或 worktmp/，
+# 这条只是兜底：早期版本曾把它掉在仓库根目录上）
+a9route-tests-config.json
+probe_fake*.mp4
+probe_*_shots/
+
+# ---- 数据集与模型：体积大，不入库；但**不是 worktmp 那种垃圾**，别顺手删 ----
+# datasets/ 里有人工复核过的标注（最贵的东西），models/ 里有训好的权重。
+# 两个目录都只留一个 README 占位。
+datasets/*
+!datasets/README.md
+models/*
+!models/README.md
+
+# ---- 兜底：ultralytics 默认相对 CWD 建这两个目录 ----
+# 代码里已把 runs_dir/datasets_dir/weights_dir 钉到 models/ 下（runner._pin_output_dirs），
+# 但换个入口/换个版本它可能又冒出来 —— 别让它们进仓库。
+runs/
+Ultralytics/
 
 # ---- 编辑器 / 系统 ----
 .idea/

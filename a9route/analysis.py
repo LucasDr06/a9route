@@ -46,10 +46,15 @@ class AnalysisReport:
     timeline: object = None                        # video.Timeline
     config: dict = field(default_factory=dict)     # 本次生效的配置（排查用）
     warnings: list = field(default_factory=list)
+    #: **这次分析无效的原因**（非空 = 结果不可用，而且**不是视频的问题**）。
+    #: 典型：OCR 读不到「路程 NN%」 -> 一张图都没扫到 -> 路线必然是空的。
+    #: 有这个字段，界面/CLI 才能把它当**错误**报出来，而不是给一条空路线让人以为
+    #: 「这视频里没有操作」—— **实测就是这么被误导的**。
+    blocker: str = ""
 
     @property
     def ok(self) -> bool:
-        return bool(self.shots)
+        return bool(self.shots) and not self.blocker
 
     def percent_rows(self) -> list[dict]:
         """每个百分点的精简信息（Web 的截图网格用）。"""
@@ -83,6 +88,7 @@ class AnalysisReport:
             "frames_scanned": self.frames_scanned,
             "seconds": round(self.seconds, 2),
             "warnings": list(self.warnings),
+            "blocker": self.blocker,
         }
 
     def describe(self) -> str:
@@ -91,6 +97,73 @@ class AnalysisReport:
                 f"得到 {len(self.shots)} 张百分点截图，"
                 f"其中 {n_op} 个百分点了有操作；"
                 f"按键细扫 {self.button_events} 个动作, {self.intents} 个操作目的")
+
+
+def _diagnose_no_shots(video: Path) -> str:
+    """**一张百分点截图都没扫到**时，查清楚到底为什么，并给一句能照做的话。
+
+    为什么要专门做这件事（2026-09-15 真踩）：
+
+        用户："现在识别路线识别不到任何操作"
+
+    实际根因跟"检测"毫无关系：`~/.paddlex` 在工作区外，受限环境**读不到 OCR 模型**
+    → `RaceReader.percent` 恒为 `None` → 粗扫一张图都存不下 → 路线空。
+    而当时只打了两句温和的 warning，看起来就像"这视频里没有操作" ✗✗。
+
+    **永远不抛异常**（它本身是错误路径上的诊断）。
+    """
+    from a9route.ocr import reader as OR
+
+    try:
+        local, default = OR.cache_dir(), OR.default_cache_dir()
+        local_state, default_state = OR._probe(local), OR._probe(default)
+    except Exception as exc:                           # noqa: BLE001
+        return "读不到「路程 NN%」，而且连 OCR 状态都查不出来："\
+               f"{type(exc).__name__}: {exc}"
+
+    if local_state != "ok" and default_state != "ok":
+        return (
+            "**OCR 读不到模型，所以一张百分点截图都没扫到 —— 不是视频的问题。**\n"
+            f"     工作区内缓存 {local}：{local_state}\n"
+            f"     默认缓存   {default}：{default_state}\n"
+            f"     修法（在**普通终端**里跑一次即可）：a9route ocr cache\n"
+            f"     之后 PaddleOCR 会把模型从工作区内那一份加载，受限环境也能用。")
+
+    # 缓存没问题 -> 真的在视频上试一次，把 OCR 自己的报错拿出来
+    try:
+        import cv2
+        cap = cv2.VideoCapture(str(video))
+        n = int(cap.get(cv2.CAP_PROP_FRAME_COUNT) or 0)
+        if n > 30:
+            cap.set(cv2.CAP_PROP_POS_FRAMES, n // 2)
+        ok, frame = cap.read()
+        cap.release()
+        if not ok or frame is None:
+            return "视频解不出帧（文件坏了，或编码不支持）。"
+        from a9route.ocr.reader import OcrReader
+        from a9route import config as _cfg
+        h = (_cfg.load_config() or {}).get("hud", {})
+        box = h.get("progress_box") or [140, 58, 260, 44]
+        x, y, w, hh = (int(v) for v in box)
+        crop = frame[y:y + hh, x:x + w]
+        o = OcrReader()
+        texts = o.read(crop)
+        if o.last_error:
+            return ("OCR 起来了但在这一帧上读失败：{0}\n"
+                    "     这一帧可能正好在加载/回放画面 ——"
+                    "先用 --max-seconds 30 试跑，或换一段比赛中的录像。"
+                    .format(o.last_error))
+        if not texts:
+            return ("OCR 能跑，但在**视频中点那一帧**读不到任何文字。\n"
+                    "     多半是这一帧不在比赛画面里（加载/结算），"
+                    "或者「路程 NN%」不在 progress_box 里。\n"
+                    "     确认：录像要是 1280×720，且左上角有「路程 NN%」。")
+        return ("OCR 读到了文字 {0!r}，但整段视频都没解析出百分比。\n"
+                "     可能是判据框位置不对（换个分辨率的录像？）——"
+                "`a9route config list hud` 看 progress_box。"
+                .format([t for t, _ in texts][:4]))
+    except Exception as exc:                           # noqa: BLE001
+        return (f"诊断时出错：{type(exc).__name__}: {exc}")
 
 
 def analyze(video: str | Path, *, out_dir: str | Path | None = None,
@@ -139,12 +212,52 @@ def analyze(video: str | Path, *, out_dir: str | Path | None = None,
         progress(f"开始分析 {video.name}（每 {every:g}s 一帧"
                  f"{'' if max_seconds is None else f'，只看前 {max_seconds:g}s'}）…")
 
-    shots = V.extract_per_percent(
-        video, out_dir=shots_dir, every=every, detector=detector,
-        max_seconds=max_seconds, with_buttons=with_buttons, workers=workers,
-        progress=progress,
-    )
-    route_text = V.suggest_route(shots)
+    # ⚠️ **模型起不来 = 这次分析无效，而不是"退回启发式接着跑"。**
+    # 本项目现在的口径是「所有判定都交给模型」：按键框/选路条数都必须来自
+    # `models/*.onnx`。起不来时 `extract_per_percent` 会抛错，这里把它变成
+    # 一个**blocker**（CLI 红字 + 退出码 1、界面弹红框），
+    # 而不是让它变成一个看起来正常、其实是像素判据的路线 ✗
+    try:
+        shots = V.extract_per_percent(
+            video, out_dir=shots_dir, every=every, detector=detector,
+            max_seconds=max_seconds, with_buttons=with_buttons, workers=workers,
+            progress=progress,
+        )
+    except RuntimeError as exc:
+        rep = AnalysisReport(
+            video=str(video), out_dir=str(out_dir), shots=[],
+            route_text="", flat="", frames_scanned=0,
+            seconds=time.perf_counter() - t0,
+            config={"scan": scan, "vision": cfg.get("vision", {}),
+                    "intent": cfg.get("intent", {}), "hud": cfg.get("hud", {})},
+        )
+        rep.blocker = str(exc)
+        rep.warnings.append("这次分析**无效**：判定必须来自模型，而模型起不来")
+        (out_dir / "route.txt").write_text("", encoding="utf-8")
+        if progress:
+            progress("  ⚠️ " + rep.blocker.replace("\n", "\n  "))
+        return rep
+    # ⚠️ `suggest_route` 在没有"模型判出的操作"时会**拒绝出路线**（不再用窗口汇总
+    # 那套像素/文字判据估一条）。这里把它变成 blocker（红字 + 退出码 1 + 界面红框），
+    # 而不是变成一条看着像路线、其实是另一套判据的东西 ✗
+    try:
+        # `fine_scan_ran=with_buttons`：模型那一遍跑过了的话，"没有操作"就是一个
+        # 合法结论（给空路线）；没跑的话 `suggest_route` 会拒绝出路线（不估算）
+        route_text = V.suggest_route(shots, fine_scan_ran=with_buttons)
+    except RuntimeError as exc:
+        rep = AnalysisReport(
+            video=str(video), out_dir=str(out_dir), shots=shots,
+            route_text="", flat="", frames_scanned=len(shots),
+            seconds=time.perf_counter() - t0,
+            config={"scan": scan, "vision": cfg.get("vision", {}),
+                    "intent": cfg.get("intent", {}), "hud": cfg.get("hud", {})},
+        )
+        rep.blocker = str(exc)
+        rep.warnings.append("这次分析**无效**（没有模型判出的操作，不给路线）")
+        (out_dir / "route.txt").write_text("", encoding="utf-8")
+        if progress:
+            progress("  ⚠️ " + rep.blocker.replace("\n", "\n  "))
+        return rep
     flat = _flat_line(route_text)
     n_btn = sum(len(getattr(s, "buttons", []) or []) for s in shots)
     n_it = sum(len(getattr(s, "intents", []) or []) for s in shots)
@@ -156,12 +269,24 @@ def analyze(video: str | Path, *, out_dir: str | Path | None = None,
         config={"scan": scan, "vision": cfg.get("vision", {}),
                 "intent": cfg.get("intent", {}), "hud": cfg.get("hud", {})},
     )
-    if with_buttons and not shots:
-        rep.warnings.append("没扫到任何百分比 —— 确认视频里是比赛画面、HUD 完整")
-    if with_buttons and n_btn == 0:
+    # ⚠️ **一张图都没扫到 = 这次分析无效，必须响亮地说清原因。**
+    # 不能只丢一句温和的 warning —— 用户看到的就是"识别不到任何操作"，
+    # 会去查检测/阈值，而真凶往往是 OCR 读不到模型（见 `_diagnose_no_shots`）。
+    if not shots:
+        rep.blocker = _diagnose_no_shots(video)
+        rep.warnings.append("这次分析**无效**（没扫到任何百分比）：见下面的原因")
+    # ⚠️ 这里原来只看 `n_btn`（`s.buttons`），而 `s.buttons` **只有旧的
+    # `vision.attach_events()` 那条路会填**；现在的主线（`extract_per_percent`）
+    # 填的是 `s.intents`。于是 `n_btn` 恒为 0 —— 哪怕精细扫描明明判出了几十个操作，
+    # 也会打一句"按键细扫没有结果" ✗✗。**误导性的警告正是用户最怕的东西**
+    # （README/NOTES 里记着：他就因为看错"用没用上按键细扫"把估算值当成真值），
+    # 所以两个都算：**真的两边都没有**才是没有结果。
+    if with_buttons and shots and n_btn == 0 and n_it == 0:
         rep.warnings.append("按键细扫没有结果（阈值可能不合适，或视频里没有按键动作）")
     (out_dir / "route.txt").write_text(route_text, encoding="utf-8")
     if progress:
+        if rep.blocker:
+            progress("⚠️ 这次分析无效：" + rep.blocker.splitlines()[0])
         progress("完成：" + rep.describe())
         progress(f"路线文件：{out_dir / 'route.txt'}")
     return rep

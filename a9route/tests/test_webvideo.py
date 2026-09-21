@@ -117,7 +117,13 @@ def _run_all() -> int:
     # ------------------------------------------------------------ T2
     print("\n=== T2 视频列表 ===")
     vids_dir = TMP / "webvids"
-    video = fake_hud_video(vids_dir / "web_test.mp4", seconds=4.0, fps=10.0)
+    # ⚠️ 这个假视频**必须真的画上操作**（氮气/刹车帧）——以前它是"只有百分比读数"
+    # 的空白画面，而 T3 却断言"路线非空"：那时能过，是因为旧的兜底路径会从
+    # 窗口汇总/圆检测里**凭空凑出**几条操作 ✗✗。现在判定全部来自模型，
+    # 没有操作就是没有操作，所以这里把操作画出来，测的才是真的那条路。
+    video = fake_hud_video(vids_dir / "web_test.mp4", seconds=4.0, fps=10.0,
+                           brake_frames=tuple(range(20, 31)),
+                           nitro_frames=(5, 6, 7, 8, 9))
     import os
     os.environ["A9ROUTE_VIDEO_DIR"] = str(vids_dir)
     try:

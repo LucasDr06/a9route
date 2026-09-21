@@ -19,7 +19,7 @@
 | OCR 看到「完美氮气」 | 同上（用实测的双击间隔） | `N:0:2:<间隔>` |
 | 氮气**单击** | 普通氮气 | `N:100:1:100` |
 | 氮气**长按** | 快速连点 | `N:0:k:100` |
-| 上方圆形路标（精细扫描里一起看） | 选路：**一直不变就取第一次识别到的**；**变了就取第一次改变时的** | `NN` |
+| 上方圆形路标（精细扫描里一起看） | 选路：**按"选路段"取结果**（见 `classify_choices` 的规则表） | `NN` |
 
 最后一步（时刻 -> 百分比）由 `video.attach_events()` 用粗扫得到的
 「时间 -> 百分比」关系插值完成 ✓。
@@ -46,6 +46,18 @@ NITRO_HOLD = 0.60
 #: 在**调用时**读它（不能写成默认参数 —— 那会在 import 时就绑死）✓
 CHOICE_MIN_HOLD = 4
 
+#: **「选路结束」的判定**（用户 2026-09-15 的新口径）：
+#: 连续这么多个采样点**都没检测到路标** = 这一段选路结束了，回到"选路结束状态"。
+#:
+#: 为什么需要一个**独立的**阈值（而不是复用 `CHOICE_MIN_HOLD`）：
+#: 它决定"两个挨得近的岔路口会不会被并成一段" ——
+#: 太短：路标闪一下就把一段拆成两段（多报一次选路）；
+#: 太长：两个岔路口并成一段，后一个的"选中"会被当成前一段的"最后一次变化"，
+#:       于是**少报一次选路**。
+#: 采样间隔 = `scan.every` 与 `scan.icon_every` 决定的（默认每 2 帧一次 ≈ 67ms），
+#: 所以 8 ≈ 0.53 秒。
+CHOICE_IDLE_HOLD = 8
+
 #: 这些写成"取值函数"而不是默认参数，理由同上：import 之后再改常量也能生效
 def _tap_360_gap() -> float:
     return float(TAP_360_GAP)
@@ -65,6 +77,10 @@ def _nitro_hold() -> float:
 
 def _choice_min_hold() -> int:
     return int(CHOICE_MIN_HOLD)
+
+
+def _choice_idle_hold() -> int:
+    return int(CHOICE_IDLE_HOLD)
 
 
 @dataclass
@@ -170,57 +186,126 @@ def classify_buttons(samples: list[tuple[float, bool, bool]], *,
     return out
 
 
+def _stable_segments(timeline: list, min_hold: int) -> list:
+    """时间轴 -> **连续同值的段**（只留长度 >= `min_hold` 的段）。
+
+    返回 `[(起始下标, 结束下标, 起始时刻, 值), ...]`；`值` 可能是 `None`
+    （那一刻没有检测到路标）。
+
+    带上**下标**是因为调用方要按"原始采样点"数空档：
+    `min_hold` 这道闸会把短段整段丢掉，若只用"留下来的段"数空档，
+    比 `min_hold` 短的空档就永远数不到，`idle_hold` 也就调不动了 ✗
+    """
+    segs: list = []
+    sentinel = object()
+    cur: object = sentinel
+    cur_from = 0.0
+    i0 = 0
+    n = 0
+    for i, (t, v) in enumerate(timeline):
+        if n and v == cur:
+            n += 1
+            continue
+        if n >= min_hold:
+            segs.append((i0, i, cur_from, None if cur is sentinel else cur))
+        cur, cur_from, i0, n = v, t, i, 1
+    if n >= min_hold:
+        segs.append((i0, len(timeline), cur_from,
+                     None if cur is sentinel else cur))
+    return segs
+
+
 def classify_choices(icons_timeline: list[tuple[float, tuple[int, int] | None]],
-                     *, min_hold: int | None = None) -> list[Intent]:
-    """选路信号 -> 操作（**精细扫描里一起看**，用户要求）。
+                     *, min_hold: int | None = None,
+                     idle_hold: int | None = None) -> list[Intent]:
+    """选路信号 -> 操作。**按"选路段"取结果，而不是按每次变化取**（用户 2026-09-15 的新口径）。
 
-    规则（用户 2026-09-13）：
+    ## 两个状态
 
-    * **一直不变**（例如从第一次识别到识别不到都是 `21`）-> 取**第一次识别到**的时刻；
-    * **发生改变**（`21` -> `22`）-> 取**第一次改变**的时刻；
-    * 这样一个岔路口只会选一次/每变一次选一次，**不会同一段反复选** ✓。
+    * **选路结束状态**（没有路标，或持续一小段看不到路标）；
+    * **选路开始状态**（从"结束状态里第一次检测到选路结果"进入）。
 
-    `min_hold`：**同一个值必须连续出现这么多帧才认**（默认 3）——
-    真岔路口的路标会持续好几秒 ✓，而把这些当成路标的景色闪光只闪一两帧 ✗
-    （实测：不加这道闸，10 秒的视频能报出 16 次选路 ✗）。
+    ## 规则（用户原话的意思，逐条对应代码）
+
+    1. **持续没有检测到选路 -> 进入选路结束状态**（`idle_hold` 个采样点都没路标）；
+    2. 在结束状态下**第一次**检测到新结果 -> 进入开始状态，
+       并以**这一次**的结果作为"这一段"的起点，之后拿它判断"有没有变化"；
+    3. 在这一段结束（进入下一个结束状态）之前，
+       **数量没变、选中也没变** -> 取**第一次**的结果和百分比；
+    4. **数量没变、只有选中变了** -> 取**最后一次变化**时的结果和百分比；
+    5. **数量变了** -> **立刻**结束当前这一段，并以新的结果进入**新的一段**
+       （不等"持续没有检测到"）—— 因为"几条路可选"变了就是另一个岔路口了。
+
+    ## 为什么还要 `min_hold` 这道闸
+
+    它挡的是**闪烁**：只闪一两帧的值不算数（实测不加它，10 秒视频能报出 16 次选路 ✗）。
+    状态机跑在**过了这道闸的段**上，所以"数量变化"和"选中变化"都是**站得住的变化**，
+    规则 5 的"快速结束"也就不会因为一帧误检而拆段。
 
     `icons_timeline` 每项 `(时刻, (图标数, 蓝色高亮是第几个) 或 None)`。
     """
     min_hold = _choice_min_hold() if min_hold is None else int(min_hold)
-    # 先做"连续 min_hold 帧同值"的过滤
-    stable: list[tuple[float, tuple[int, int]]] = []
-    run_val: tuple[int, int] | None = None
-    run_from: float | None = None
-    run_len = 0
-    for t, cur in icons_timeline:
-        if cur is None:
-            if run_val is not None and run_len >= min_hold and run_from is not None:
-                stable.append((run_from, run_val))
-            run_val, run_from, run_len = None, None, 0
-            continue
-        if cur == run_val:
-            run_len += 1
-        else:
-            if run_val is not None and run_len >= min_hold and run_from is not None:
-                stable.append((run_from, run_val))
-            run_val, run_from, run_len = cur, t, 1
-    if run_val is not None and run_len >= min_hold and run_from is not None:
-        stable.append((run_from, run_val))
+    idle_hold = _choice_idle_hold() if idle_hold is None else int(idle_hold)
+    idle_hold = max(1, int(idle_hold))
 
+    segs = _stable_segments(icons_timeline, min_hold)
     out: list[Intent] = []
-    last: tuple[int, int] | None = None
-    for t, cur in stable:
-        if last is None:
-            cnt, idx = cur
-            out.append(Intent(kind="choice", t0=t, op=f"{cnt}{idx}",
-                              note=f"第一次识别到 {cnt} 选 {idx}"))
-            last = cur
-        elif cur != last:
-            cnt, idx = cur
-            out.append(Intent(kind="choice", t0=t, op=f"{cnt}{idx}",
-                              note=f"从 {last[0]}选{last[1]} 变成 {cnt}选{idx}"
-                                   f" -> 取第一次改变时"))
-            last = cur
+    # 当前这一段：起点值 + "最后一次变化"（没有变化时是 None）
+    cur_val: tuple[int, int] | None = None
+    cur_from = 0.0
+    last_val: tuple[int, int] | None = None      # 仅"选中"变化时更新
+    last_from = 0.0
+    idle_run = 0
+    prev_end = 0
+
+    def close(note_tail: str = "") -> None:
+        """收掉当前这一段：按规则 3/4 决定取哪个时刻/哪个值。"""
+        nonlocal cur_val, last_val
+        if cur_val is None:
+            return
+        if last_val is None:
+            cnt, idx = cur_val
+            out.append(Intent(kind="choice", t0=cur_from, op=f"{cnt}{idx}",
+                              note=f"这一段一直没变（{cnt} 选 {idx}）"
+                                   f" -> 取第一次识别到时{note_tail}"))
+        else:
+            cnt, idx = last_val
+            out.append(Intent(kind="choice", t0=last_from, op=f"{cnt}{idx}",
+                              note=f"这一段里只有「选中」变过，最后一次是 "
+                                   f"{cnt} 选 {idx} -> 取最后一次变化时{note_tail}"))
+        cur_val, last_val = None, None
+
+    for i0, i1, t, val in segs:
+        # 这一段之前、被稳定性闸丢掉的采样点，同样算"没确认到值" -> 计入空档
+        idle_run += (i0 - prev_end)
+        if cur_val is not None and idle_run >= idle_hold:
+            close(note_tail="（之后持续没检测到路标 -> 这一段结束）")
+        if val is None:
+            # 确认"这一段没有路标"：整段都算进空档
+            idle_run += (i1 - i0)
+            if cur_val is not None and idle_run >= idle_hold:
+                close(note_tail="（之后持续没检测到路标 -> 这一段结束）")
+            prev_end = i1
+            continue
+        idle_run = 0
+        cnt, sel = val
+        if cur_val is None:
+            # 规则 2：结束状态里第一次检测到 -> 开新的一段，以它为起点
+            cur_val, cur_from, last_val = (cnt, sel), t, None
+        elif cnt != cur_val[0]:
+            # 规则 5：数量变了 -> **立刻**收掉这一段，用新结果开新的一段
+            prev = cur_val[0]
+            close(note_tail="（选项数变了：{0} -> {1}，这一段到此为止）"
+                            .format(prev, cnt))
+            cur_val, cur_from, last_val = (cnt, sel), t, None
+        elif sel != cur_val[1]:
+            # 规则 4：数量没变、只有选中变了 -> 记住"最后一次变化"
+            cur_val = (cnt, sel)
+            last_val, last_from = (cnt, sel), t
+        prev_end = i1
+    # 结尾剩下的采样点也算空档（"一直没再出现" = 这一段已经结束了）
+    idle_run += (len(icons_timeline) - prev_end)
+    close()
     return out
 
 

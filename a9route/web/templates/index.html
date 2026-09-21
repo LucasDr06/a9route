@@ -34,6 +34,8 @@
     </div>
 
     <div class="actions">
+      <a class="btn btn-ghost" href="/dataset"
+         title="查数据集里的标注和标定（config.json 的按键框+阈值）对不对得上">数据集体检</a>
       <button class="btn btn-ghost" id="paramsBtn" type="button"
               title="查看本次生效的判据参数">参数</button>
       <button class="btn btn-ghost" id="stopWatchBtn" type="button"
@@ -111,16 +113,23 @@
        aria-labelledby="paramsModalTitle">
     <div class="modal-card modal-wide">
       <div class="modal-head">
-        <h3 id="paramsModalTitle">本次生效的判据参数</h3>
+        <h3 id="paramsModalTitle">判据参数（改完保存就生效）</h3>
         <button class="btn btn-icon" id="paramsModalClose" type="button" aria-label="关闭">✕</button>
       </div>
       <div class="modal-body">
-        <p class="modal-note">
-          这些值来自 <code>config.json</code>（没有就用内置默认值）。
-          改法：命令行 <code>a9route config set vision__nitro_red_thr=0.22</code>，
-          或某一次分析单独覆盖 <code>--set vision__nitro_red_thr=0.22</code>。
-        </p>
-        <pre class="route-notes" id="paramsDump"></pre>
+        <div class="cfg-bar">
+          <button class="btn btn-sm btn-primary" id="cfgSave" type="button">保存到 config.json</button>
+          <button class="btn btn-sm" id="cfgReload" type="button">放弃改动 / 重新读取</button>
+          <button class="btn btn-sm btn-ghost" id="cfgResetAll" type="button">全部恢复默认</button>
+          <span class="pill" id="cfgPill">—</span>
+          <span class="muted" id="cfgHint"></span>
+        </div>
+        <div class="alert alert-error hidden" id="cfgError" role="alert"></div>
+        <div id="cfgForm" class="cfg-form"></div>
+        <details class="cfg-raw">
+          <summary>完整配置（只读，含没做成滑块的项）</summary>
+          <pre class="route-notes" id="paramsDump"></pre>
+        </details>
       </div>
     </div>
   </div>

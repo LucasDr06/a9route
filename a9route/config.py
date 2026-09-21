@@ -31,6 +31,11 @@ from a9route import paths
 
 ENV_PREFIX = "A9ROUTE_"
 
+#: 最近一次 `apply(cfg)` 用的那份配置（见 `current()`）。
+#: ⚠️ 别拿 `load_config()` 当"当前配置"用 —— 它**只读磁盘**，
+#: 会把 `analyze --set ...` / `analyze(overrides=...)` 这类本次覆盖漏掉。
+_CURRENT: dict | None = None
+
 DEFAULTS: dict[str, dict] = {
     # ---------------------------------------------------------------- 视频分析
     "scan": {
@@ -55,6 +60,12 @@ DEFAULTS: dict[str, dict] = {
         #: 选路稳定性闸：同一个值连续这么多帧才认（真岔路口持续好几秒，
         #: 景色闪光只闪一两帧 —— 不加这道闸，10 秒视频能报出 16 次选路 ✗）
         "choice_min_hold": 4,
+        #: **「选路结束」的阈值**：连续这么多个采样点都没检测到路标，
+        #: 就认为这一段选路结束了（回到"选路结束状态"，下一次检测到就开新的一段）。
+        #: 它决定"挨得近的两个岔路口会不会被并成一段"：
+        #: 太短 -> 路标闪一下就把一段拆成两段（多报选路）；太长 -> 并成一段（少报选路）。
+        #: 采样间隔由 `every`/`icon_every` 决定（默认 ≈67ms 一次），所以 8 ≈ 0.53 秒。
+        "choice_idle_hold": 8,
         #: 选路**交叉校验**的容差（个百分点）：精细扫描说这里是岔路口，
         #: 粗扫也必须在 ±这个范围内看到 >=2 个路标才算（两边都说是，才认）✓
         "choice_cross_tol": 1,
@@ -89,6 +100,28 @@ DEFAULTS: dict[str, dict] = {
         #: 左上角 TouchDrive 那行
         "touchdrive_box": [24, 96, 260, 40],
 
+        #: 选路模型的运行后端（和按键那套同样的规则，只是**另一套类别**）：
+        #:   auto         **默认**：`models/choice.onnx` 在就用模型，不在就退回启发式
+        #:   onnx / ultralytics / heuristic
+        #: 换模型：`a9route train models` / `a9route train use <名字>`
+        "choice_backend": "auto",
+        #: 选路模型文件（空 = 用 models/choice.onnx）
+        "choice_model": "",
+        #: 选路模型的推理分辨率（留默认值时会跟随模型清单里记的 imgsz）
+        "choice_imgsz": 640,
+        #: 选路模型的置信度阈值
+        "choice_conf": 0.40,
+        #: 选路模型的 NMS IoU
+        "choice_iou": 0.50,
+        #: 选路模型的 onnxruntime 执行后端：auto / CPUExecutionProvider / …
+        "choice_provider": "auto",
+        #: 选路模型的 ONNX 输出形态（同 key_fmt，2 类时行宽有歧义）
+        "choice_fmt": "auto",
+        #: 选路：**最少几个路标才算岔路口**（用户规则：至少 2 个）
+        "choice_min_options": 2,
+        #: 选路：最多几条路（用户规则：一屏只有 2/3/4 条）
+        "choice_max_options": 4,
+
         #: 选路路标检测（HoughCircles）：两遍，先严后松
         "choice_param2": 28,
         "choice_param2_fallback": 22,
@@ -97,6 +130,47 @@ DEFAULTS: dict[str, dict] = {
         "choice_max_r": 45,
         #: 蓝色高亮判定：圆内蓝色占比 > 这个值
         "choice_blue_ratio": 0.35,
+
+        # ---------------------------------------------------------- 按键模型（YOLOv8）
+        #: 按键识别后端：
+        #:   auto         **默认**：`models/keys.onnx` 在就用模型，不在就退回启发式
+        #:                （退回时在 analyze 的日志里**明说**一句话，不静默）
+        #:   onnx         强制用模型（文件不在就报错，不偷偷降级）
+        #:   ultralytics  直接用 .pt（要 torch；适合边训边试）
+        #:   heuristic    只用 cv2/numpy 的启发式（和最初逐字一致）
+        #: 换模型：`a9route train models` 看有什么，`a9route train use <名字>` 切过去
+        #: （切换时会**核对模型清单里的类别顺序**，类序反了直接拒绝启动）。
+        "key_backend": "auto",
+        #: 模型文件（空 = 用 models/keys.onnx）。`.onnx` 走 onnxruntime、`.pt` 走 ultralytics
+        "key_model": "",
+        #: 推理分辨率。**留默认值(640)时会跟随模型清单里记的 imgsz** ——
+        #: 只有你显式改过这个值才强制用它（避免"导出 640、推理别的值"的静默错位）
+        "key_imgsz": 640,
+        #: 置信度阈值。**别调太低** —— 这个项目的已知问题是"氮气误报偏多"
+        "key_conf": 0.40,
+        #: NMS 的 IoU 阈值
+        "key_iou": 0.50,
+        #: onnxruntime 的执行后端：auto / CPUExecutionProvider / CUDAExecutionProvider
+        "key_provider": "auto",
+        #: 定位闸（0 = 关）：检测框中心离"配置里那个按键位置"超过
+        #: 这个值 × 画面宽度 就当没看见 —— 防模型在加载/结算画面乱响
+        "key_anchor_tol": 0.0,
+        #: **ONNX 输出形态**：auto / raw / nms
+        #: 我们只有 2 类 -> `4+nc == 6`，而"已做 NMS"的导出行宽**也是 6**，
+        #: 光看形状分不出来 ✗（猜错不报错，只会静默把坐标当分数用）。
+        #: `auto` 按"未做 NMS"解析（`a9route train export` 导出的就是这种，
+        #: 我们**不传 nms=True**）；你要用 `nms=True` 导过，就设成 `nms`。
+        "key_fmt": "auto",
+        #: **启发式后端**用哪套口径（只有在 `key_backend=heuristic` 时有意义）：
+        #:   fine  逐字保持现状 —— `scan_fine` 一直在用的那两行
+        #:         （刹车 = 绝对白度 > brake_white_thr；氮气 = max(红, 圈内外) > nitro_red_thr）
+        #:   cues  和 `cues.key_pressed()` 统一（刹车 = 圈内外 ∪ 白度；氮气 = **只认红**）
+        #: ⚠️ 两者**不一样**，而且默认的 fine 口径把"圈内−圈外"并进了氮气 ——
+        #: 可 NOTES §1 实测的结论是"圈内判据对氮气没信号（按下 0.004），
+        #: 并进来只会把误报抬高 ✗"。README 里「氮气偏多」那条已知问题，
+        #: 至少有一部分是这儿来的。**默认不改**（路线输出一个字节不变），
+        #: 想验证就把这个设成 cues，再用 `a9route train pulses` 对比动作数。
+        "key_heuristic_mode": "fine",
     },
 
     # ---------------------------------------------------------------- 比赛内 HUD 读数
@@ -273,6 +347,8 @@ def apply(cfg: dict | None = None) -> dict:
     intent.NITRO_HOLD = float(it.get("nitro_hold", intent.NITRO_HOLD))
     scan = cfg.get("scan", {})
     intent.CHOICE_MIN_HOLD = int(scan.get("choice_min_hold", intent.CHOICE_MIN_HOLD))
+    intent.CHOICE_IDLE_HOLD = int(scan.get("choice_idle_hold",
+                                           intent.CHOICE_IDLE_HOLD))
 
     # ---- CueDetector 用的那几路框/阈值（它从 coords 里取，没给才用默认）----
     cues.COORDS = {
@@ -283,7 +359,40 @@ def apply(cfg: dict | None = None) -> dict:
         "nitro_key_box": cues.NITRO_KEY_BOX,
         "cyan_thr": cues.CYAN_THR,
     }
+
+    # ---- 按键模型后端（YOLOv8）----
+    # 配置可能变了（尤其是 `key_model`/`key_backend`），所以**必须清掉后端缓存** ——
+    # 不然一次进程里先后跑两种后端会拿到旧的那个（缓存按参数做 key，其实也安全，
+    # 但 ONNX session 不释放会白占显存，所以这里是显式清）。
+    try:
+        from a9route.vision import keys as _keys
+        _keys.reset_cache()
+    except Exception:
+        pass
+    try:
+        from a9route.vision import choice as _choice
+        _choice.reset_cache()
+    except Exception:
+        pass
+    # ⚠️ **记住"这次生效的是哪份配置"**：`vision.keys.resolve_backend()` /
+    # `vision.choice.resolve_backend()` 以前是各自去 `load_config()` 读**磁盘上**那份 ——
+    # 于是 `analyze --set vision__choice_backend=heuristic`（以及
+    # `analyze(overrides=...)`）**对被覆盖的那几项是无效的**：模块常量确实被灌进去了，
+    # 但"用哪个后端/哪个模型"是重建时另读磁盘决定的 ✗✗（实测：两次跑明明给了不同
+    # 的 backend，日志里打印的都是同一个模型，整片对比直接失效）。
+    # 现在后端解析走 `current()`（= 最近一次 apply 用的那份配置），
+    # 覆盖项才真的覆盖得住。
+    global _CURRENT
+    _CURRENT = cfg
     return cfg
+
+
+def current() -> dict:
+    """**当前生效**的配置（最近一次 `apply(cfg)` 用的那份）。
+
+    没 `apply` 过就退回读磁盘 —— 和以前的行为一致，`load_config()` 仍然只读文件。
+    """
+    return _CURRENT if _CURRENT is not None else load_config()
 
 
 def describe(cfg: dict | None = None, changed_only: bool = False) -> str:

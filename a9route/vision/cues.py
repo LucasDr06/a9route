@@ -203,21 +203,44 @@ class Cue:
 
 
 class CueDetector:
-    """把一帧变成 `Cue`。依赖可注入（离线测试用假 reader/reader_texts）。"""
+    """把一帧变成 `Cue`。依赖可注入（离线测试用假 reader/reader_texts）。
+
+    `key_detector`：可选的**按键后端**（`vision.keys`）。给了就用它判
+    `brake_lit` / `nitro_pressed`，没给就沿用下面那套内置判据 ——
+    这样"换 YOLOv8 模型"这件事在**粗扫和精细扫描两边是同一个开关**
+    （`config.vision.key_backend`），不会出现"粗扫用模型、细扫用阈值"的分裂。
+
+    `choice`：可选的**选路后端**（`vision.choice`），同理 —— 给了就用它数路标。
+    ⚠️ 这个口子是**补上的**（2026-09-15）：以前这里自己造一个裸 `RaceReader()`，
+    于是粗扫的 `cue.icons` **一直是 HoughCircles**，而细扫早就换成模型了 ✗✗。
+    后果不只是"白跑一遍启发式"：`cue.icons` 还被用来做**交叉校验**
+    （粗扫也看到 ≥2 个路标才认这次选路），**启发式因此能一票否掉模型判出来的选路**。
+    """
 
     def __init__(self, *, reader=None, reader_texts=None, ocr=None,
-                 coords: dict | None = None, drift_from_key: bool = False):
+                 coords: dict | None = None, drift_from_key: bool = False,
+                 key_detector=None, choice=None):
         self.reader = reader
         self._reader_texts = reader_texts
         self._ocr = ocr
         self.coords = dict(coords or {})
         #: True = 漂移完全按"刹车键亮不亮"判（需要先标定刹车键；见类文档）
         self.drift_from_key = bool(drift_from_key)
+        #: 按键后端（None = 用内置启发式；见类文档）
+        self.key_detector = key_detector
+        #: 选路后端（None = 内置 HoughCircles；见类文档）
+        self.choice = choice
+        if reader is not None and choice is not None:
+            # 注入的 reader 自带后端，这里再给一个就会**两边不一致** —— 说出来，
+            # 别让"以为注入了、其实没生效"再发生一次
+            raise ValueError("CueDetector 同时给了 reader 和 choice："
+                             "reader 自带后端，两者会打架；只用其中一个")
 
     def _percent_and_icons(self, frame):
         if self.reader is None:
             from a9route.vision.hud import RaceReader
-            self.reader = RaceReader()
+            # **选路后端一起注入**：粗扫和细扫必须是同一个后端（见类文档）
+            self.reader = RaceReader(choice=self.choice)
         st = self.reader.read(frame)
         pct = getattr(st, "percent", None)
         icons = list(getattr(st, "icons", []) or [])
@@ -255,22 +278,39 @@ class CueDetector:
         # ---- 两个**按键**：三种证据取并集（详见 key_pressed() 的实测对比表）----
         cue.brake_bright = round(bright_ratio(frame, self._c("brake_key_box",
                                                              BRAKE_KEY_BOX)), 3)
-        hit_b, info_b = key_pressed(frame, self._c("brake_key_box", BRAKE_KEY_BOX),
-                                    "brake")
-        cue.brake_lit = hit_b
-        cue.brake_red = info_b["red"]
-        cue.brake_ring = info_b["ring"]
-        hit_n, info_n = key_pressed(frame, self._c("nitro_key_box", NITRO_KEY_BOX),
-                                    "nitro")
-        cue.nitro_pressed = hit_n
-        cue.nitro_red = info_n["red"]
-        cue.nitro_ring = info_n["ring"]
+        if self.key_detector is not None:
+            # 外部后端（YOLOv8 模型）—— 粗扫/细扫共用同一个判断
+            read = self.key_detector.read(frame)
+            cue.brake_lit = bool(read.brake)
+            cue.nitro_pressed = bool(read.nitro)
+            cue.brake_red = float(read.info.get("red", 0.0) or 0.0)
+            cue.brake_ring = float(read.info.get("ring", 0.0) or 0.0)
+            cue.nitro_red = float(read.info.get("red", 0.0) or 0.0)
+            cue.nitro_ring = float(read.info.get("ring", 0.0) or 0.0)
+        else:
+            hit_b, info_b = key_pressed(frame, self._c("brake_key_box", BRAKE_KEY_BOX),
+                                       "brake")
+            cue.brake_lit = hit_b
+            cue.brake_red = info_b["red"]
+            cue.brake_ring = info_b["ring"]
+            hit_n, info_n = key_pressed(frame, self._c("nitro_key_box", NITRO_KEY_BOX),
+                                       "nitro")
+            cue.nitro_pressed = hit_n
+            cue.nitro_red = info_n["red"]
+            cue.nitro_ring = info_n["ring"]
         cue.nitro_lit = cue.nitro_pressed
         status = " ".join(self._texts(frame, self._c("status_box", STATUS_BOX)))
         cue.status_text = status
         # 漂移：**看刹车键有没有按下**（用户标定过的判据）；文字提示只当兜底
         #（实测「漂移NN米」是累计里程、会滞留，所以不能只看它 ✗）
-        cue.drifting = cue.brake_lit or (("漂移" in status) and self.drift_from_key is not True)
+        # ⚠️ 有按键模型时**只认模型**：用户的规则是"漂移 = 按住刹车"，
+        #    文字那一路（OCR 到「漂移」）会额外加进来，等于在模型之外多一条判定 ✗
+        #    （2026-09-15 按"判定全交给模型"的要求收紧；没模型时才用文字兜底。）
+        if self.key_detector is not None:
+            cue.drifting = bool(cue.brake_lit)
+        else:
+            cue.drifting = bool(cue.brake_lit) or (
+                ("漂移" in status) and self.drift_from_key is not True)
         # 只认完整的「完成360度旋转」提示 —— 裸 "360" 会误命中（实测把 9%~19% 连报 11 次 ✗）
         cue.spin360 = "360度" in status or "完成360" in status
         on = getattr(st, "touchdrive_on", None)

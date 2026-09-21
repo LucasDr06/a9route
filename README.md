@@ -33,6 +33,12 @@ $py = "C:\Users\Admin\miniconda3\envs\alphash9auto\python.exe"
 
 # ② 起本地 Web 窗口（拖视频进去 -> 左边路线、右边逐百分点截图）
 & $py -m a9route serve           # http://127.0.0.1:8790/
+                                #   http://127.0.0.1:8790/dataset  ← 按键数据集：体检 / 逐帧对照
+                                #   http://127.0.0.1:8790/choice   ← **选路**数据集：三个选择题
+                                # 也可以直接双击根目录的 serve.cmd（= python main.py）
+                                # ⚠️ 服务就跑在**这个终端窗口的进程里**，窗口别关；Ctrl+C 停
+                                # 页面右上「参数」= **可编辑的判据参数**（滑块/数字框，
+                                # 保存即写进 config.json，下一次分析生效）
 
 # ③ 只想对齐时间、自己填操作
 & $py -m a9route video output\跑图转路线测试.mp4
@@ -42,12 +48,41 @@ $py = "C:\Users\Admin\miniconda3\envs\alphash9auto\python.exe"
 
 # ⑤ 离线回归（不需要设备、不需要网络）
 & $py -m a9route test all
+
+# ⑥ 按键识别用训练出来的 YOLOv8 模型（**默认已开启**：模型在就用）
+& $py -m a9route train doctor                    # 先看环境能干什么
+& $py -m a9route train build output\*.mp4        # 抽帧 + 启发式预标注
+& $py -m a9route train review                    # 人工复核（**模型的增量全在这**）
+& $py -m a9route train run                       # 训练（要在有 torch 的环境里）
+& $py -m a9route train eval                      # 逐帧评估（只看人工复核过的帧）
+& $py -m a9route train export                    # 导出 ONNX + 写模型清单
+& $py -m a9route train models                    # 看有哪些模型
+& $py -m a9route train use keys                  # 换模型（会**核对类别顺序**）
+
+# ⑦ **选路**也用 YOLO（另一套类别 / 另一个数据集 / 另一个界面）
+& $py -m a9route train choice-build --source keys   # 从按键数据集分类出来（硬链接，不占空间）
+& $py -m a9route train choice-stats                 # 看分布
+                                #   http://127.0.0.1:8790/choice ← 标定：有没有选路 / 几个 / 第几个
+& $py -m a9route train run --name choice            # 训练
+& $py -m a9route train export --name choice         # -> models/choice.onnx
+& $py -m a9route train use choice                   # 切运行时后端
+
+# ⑧ OCR 模型缓存（读不到时会读不出「路程 NN%」，路线就空了）
+& $py -m a9route ocr status                      # 看能不能读到
+& $py -m a9route ocr cache                       # 抄一份到工作区（做一次即可）
 ```
 
 > **环境**：只用 conda 环境 `alphash9auto` 里已有的那套即可
 > （Python 3.12 / numpy / opencv 4.10 / flask 3.1 / paddleocr 3.4 + CUDA）。
 > 依赖清单见 `pyproject.toml`；OCR 是**可选的**（起不来时会退化，见「已知限制」）。
 > `python main.py` 与 `python -m a9route` 等价。
+> **判定全部来自模型**：按键 `key_backend=auto` → `models/keys.onnx`，
+> 选路 `choice_backend=auto` → `models/choice.onnx`。
+> ⚠️ `auto` **不静默退回启发式**：模型文件不在就**报错**（这次分析无效，并告诉你
+> 怎么修），因为"看起来正常、其实是像素判据"的路线比报错更坏。
+> 想用启发式请**显式**设 `vision.key_backend=heuristic`（只用于调试/预标注）。
+> 「路程 NN%」用 PaddleOCR；`360 / 漂移 / 双击氮气` 由**信号形状规则**推出
+> （`core/intent.py`，模型给的按键信号 + 用户定的规则）。
 
 ### 录像要求
 
@@ -175,7 +210,10 @@ worktmp/analysis/<视频名>/
 a9route/
 ├── main.py                   # 根入口（= python -m a9route）
 ├── config.json               # （可选）所有可调参数；不存在就用内置默认
+├── TRAINING.md               # **按键 YOLOv8 模型：要准备什么、怎么训、怎么切**
 ├── routes/                   # 路线样例：demo.txt（格式说明）+ 用户真实路线（47 条）
+├── datasets/                 # （不入库）训练数据集：帧 + 人工复核过的标注
+├── models/                   # （不入库）预训练权重 / keys.onnx / 训练产物
 ├── a9route/
 │   ├── cli.py                # 所有子命令
 │   ├── config.py             # **可调参数的唯一事实来源**（含实测注释）
@@ -188,9 +226,25 @@ a9route/
 │   ├── vision/
 │   │   ├── video.py          # 抽帧、时间轴、逐百分点截图、精细扫描、生成路线
 │   │   ├── cues.py           # 一帧 → "现在在做什么"（按键/路标/状态文字）
+│   │   ├── keys.py           #   **通用 ONNX 检测器** + 按键的三个后端：heuristic / onnx / ultralytics
+│   │   ├── choice.py         #   **选路识别**：图标 → (有没有岔路 / 几个 / 选第几个)
 │   │   └── hud.py            # 一帧 → 比赛读数（路程 NN% / 排名 / 路标）
-│   ├── ocr/reader.py         # PaddleOCR 懒加载（含启动静音那套 fd 重定向）
+│   ├── train/                # **YOLOv8 训练框架**（只有它 import torch）
+│   │   ├── labels.py         #   类别定义 + YOLO 标注读写 + data.yaml
+│   │   ├── choice.py         #   **选路这条线**：三个答案 ↔ 标注框、数据集分类、统计
+│   │   ├── frames.py         #   抽哪些帧（优先级采样：翻转帧/吵架/贴阈值/…）
+│   │   ├── prelabel.py       #   启发式预标注（和运行时同一套判据）
+│   │   ├── dataset.py        #   数据集构建 / **按视频划分** / 校验 / 统计
+│   │   ├── audit.py          #   **数据集体检**：标注 ↔ 标定 ↔ 判据 对不对得上
+│   │   ├── modelcard.py      #   **模型清单**（类序/imgsz/指标）+ 换模型的类序校验
+│   │   ├── review.py         #   复核页 + 导出修正 + 写回标注
+│   │   ├── runner.py         #   训练 / 逐帧评估 / 导出 ONNX / 整片脉冲对比
+│   │   └── doctor.py         #   环境与素材自检
+│   ├── ocr/reader.py         # PaddleOCR 懒加载 + **模型缓存的自动镜像**（见 NOTES §10.17）
 │   ├── web/                  # 本地窗口（Flask + 原生 JS，无构建步骤）
+│   │   ├── app.py            #   「跑图视频 → 路线」页 + `/api/*`
+│   │   ├── dataset.py        #   「数据集体检」页（`/dataset` + `/api/dataset/*`）
+│   │   └── choice.py         #   **「选路标定」页**（`/choice` + `/api/choice/*`，和上面那页分开）
 │   └── tests/                # 离线回归 + fixtures（真帧样本）
 └── NOTES.md                  # 踩坑记录：判据怎么量出来的、哪些路走不通
 ```
@@ -200,11 +254,11 @@ a9route/
 ## 测试
 
 ```powershell
-& $py -m a9route test all      # route / intent / video / web 四个模块
+& $py -m a9route test all      # route / intent / video / web / train 五个模块
 & $py -m a9route test video    # 单独跑一个
 ```
 
-**不需要设备、不需要网络**，跑一两分钟。四块各锁什么：
+**不需要设备、不需要网络**，跑一两分钟。五块各锁什么：
 
 | 模块 | 锁什么 |
 |---|---|
@@ -212,6 +266,7 @@ a9route/
 | `test_intent` | 信号形状 → 目的（360 / 漂移 / 打断氮气 / 单击双击长按 / 选路取第一次改变） |
 | `test_video` | 时间轴、抽帧真解码、窗口汇总、按键段、**真帧样本回归**、端到端一条龙、配置生效 |
 | `test_webvideo` | Web 接口：上传、轮询、截图防目录穿越、路线下载、OCR 不可用时不崩 |
+| `test_train` | **训练框架（不需要 torch）**：YOLO 标注读写、抽帧优先级与预算、预标注、 数据集构建/划分/校验、**数据集体检（含 5 个"故意弄坏"的反例）**、 复核写回、letterbox 几何、ONNX 输出解码、后端选择、体检页的接口、 **选路那条线（三个答案 ↔ 标注框往返、数据集分类、模型清单认任务）** |
 
 真帧样本在 `a9route/tests/fixtures/`（3 张选路路标帧 + 刹车/氮气按键截图），
 都是当年在真实比赛画面里裁下来的，所以能抓住"框改歪了""阈值调坏了"这类回归。
@@ -227,6 +282,23 @@ a9route/
 
 1. **氮气偏多**：现在 `红 > 0.15` 且允许单帧，整段视频里会产出偏多的单发氮气。
    下一步建议：改用**相对基线**（该框自己最近 2~3 秒的中位数），或要求"成对/成段"。
+
+   > **2026-09-14 补**：接训练框架时发现了一个**具体的**来源 ——
+   > 项目里其实有**两套启发式口径**，而且真正产出路线里 `N:` 条目的
+   > `scan_fine()` 用的是**被 NOTES §1 否掉的那套**：
+   >
+   > | | 刹车 | 氮气 |
+   > |---|---|---|
+   > | `scan_fine()`（**默认，产出路线**） | 绝对白度 > 阈值 | **`max(红, 圈内外)` > 阈值** |
+   > | `cues.key_pressed()`（粗扫在用） | 圈内外 ∪ 白度 | **只认红** |
+   >
+   > NOTES §1 实测的结论是"**圈内判据对氮气没信号**（测试3 按下 0.004），
+   > 并进来只会把误报抬高 ✗"，`cues.py` 的注释也写着"氮气只认红 >0.15" ——
+   > 所以"氮气偏多"至少有一部分是**把没信号的通道并了进来**。
+   > **没有改默认行为**（迁移时"判据逐字未改"这条守住了），
+   > 但现在是**可测的**：`a9route train pulses <录像>` 会把启发式当对照组打出来，
+   > 也可以 `--set vision__key_heuristic_mode=cues` 直接对比两套口径。
+   > 见 `TRAINING.md` §8.5。
 2. **选路条目比实际多 1 条**：用户说真实只有 5 个岔路口，输出 6 条，
    疑似开头 `4,21` + `5,22` 是同一个岔路口被读成两个值。
    建议：把"1 个百分点内的改变"合并成一条（取最后一次），或把稳定性闸从 4 帧提到 6 帧。
@@ -236,6 +308,16 @@ a9route/
 * **OCR 起不来会退化**：读不到「路程 NN%」时，`shots` 会是空的、路线正文为空 ——
   这时工具会明确报告"没扫到百分比"，**不会编一个数**。
   精细扫描那一半（按键）仍然有效（实测在真录像上 1529 帧 → 42 个按键动作）。
+
+  > ⚠️ **2026-09-15 补**：这条"退化"曾经**看起来像 bug** ——
+  > 用户报"识别路线识别不到任何操作"，查下去发现真凶是
+  > **`~/.paddlex` 在工作区外、受限环境读不到 OCR 模型** →
+  > 每个百分点都进不了 → 路线必然是空的，**跟检测毫无关系** ✗✗。
+  >
+  > 现在做了两件事：① `a9route ocr cache` 把模型**抄一份到工作区**（约 21 MB，
+  > 自动镜像，做一次即可）；② 一张图都没扫到时 `analyze` 会**当错误报出来**，
+  > 附上具体原因和能照做的命令（CLI 退出码非 0、界面弹红框），
+  > 而不是给一条空路线让人以为"这视频没操作"。见 NOTES §10.17。
 * **模板匹配已经被判定走不通**（图标是半透明叠加，模板主要在匹配背景），别再去调模板。
 * 只在 **1280×720** 的录像上验证过。
 

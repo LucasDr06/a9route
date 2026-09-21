@@ -1,0 +1,159 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>数据集体检 · a9route</title>
+  <link rel="stylesheet" href="/static/style.css" />
+</head>
+<body>
+  <div class="conn-banner hidden" id="connBanner" role="alert"></div>
+  <div class="toasts" id="toasts" aria-live="polite"></div>
+
+  <header class="topbar">
+    <div class="brand">
+      <div class="brand-mark">a9</div>
+      <div class="brand-text">
+        <h1>数据集体检</h1>
+        <p class="brand-sub">
+          查「数据集里的标注」和「标定（<code>config.json</code> 的按键框 + 阈值）」对不对得上 ——
+          对不上是最阴的错：训练不报错，只是静默变差
+        </p>
+      </div>
+    </div>
+
+    <div class="device-box">
+      <div class="field-label">数据集</div>
+      <div class="device-row">
+        <select class="select" id="dsSelect" aria-label="数据集"></select>
+        <button class="btn btn-icon" id="dsRefreshBtn" type="button"
+                title="重新列出数据集" aria-label="重新列出">⟳</button>
+        <button class="btn btn-primary" id="dsAuditBtn" type="button">重新体检</button>
+      </div>
+      <div class="device-source" id="dsHint">正在读取数据集…</div>
+    </div>
+
+    <div class="actions">
+      <a class="btn btn-ghost" href="/" title="回到「跑图视频 → 路线」">跑图 → 路线</a>
+      <button class="btn btn-ghost" id="dsExportBtn" type="button"
+              title="把界面上改过的标注存成 JSON（命令行也能用 train apply 写回）">导出修正</button>
+      <button class="btn btn-primary" id="dsApplyBtn" type="button"
+              title="把界面上改过的标注写回磁盘">写回标注</button>
+    </div>
+  </header>
+
+  <main class="layout layout-single">
+    <!-- ================= 体检 ================= -->
+    <section class="panel">
+      <div class="panel-head">
+        <h2 class="panel-title">① 对应关系体检</h2>
+        <div class="pill" id="dsAuditPill">还没跑</div>
+        <span class="muted" id="dsAuditNote"></span>
+      </div>
+
+      <div class="ds-counts" id="dsCounts"></div>
+
+      <div class="ds-findings" id="dsFindings">
+        <p class="muted">点右上角「重新体检」开始。</p>
+      </div>
+
+      <details class="ds-calib" id="dsCalibBox">
+        <summary>当前标定（<code>config.json</code> 里实际生效的值）</summary>
+        <div class="ds-calib-body" id="dsCalib"></div>
+      </details>
+    </section>
+
+    <!-- ================= 逐帧对照 ================= -->
+    <section class="panel">
+      <div class="panel-head">
+        <h2 class="panel-title">② 逐帧对照</h2>
+        <div class="pill" id="dsFramePill">—</div>
+        <span class="muted" id="dsFrameNote"></span>
+      </div>
+
+      <div class="ds-toolbar">
+        <label class="field-label" for="fSplit">划分</label>
+        <select class="select select-sm" id="fSplit">
+          <option value="all">全部</option>
+          <option value="train">train</option>
+          <option value="val">val</option>
+          <option value="pool">pool</option>
+        </select>
+
+        <label class="field-label" for="fReason">抽样原因</label>
+        <select class="select select-sm" id="fReason">
+          <option value="all">全部</option>
+          <option value="edge">edge 翻转帧</option>
+          <option value="disagree">disagree 吵架</option>
+          <option value="near">near 贴阈值</option>
+          <option value="pos">pos 正样本</option>
+          <option value="bg">bg 背景</option>
+        </select>
+
+        <label class="field-label" for="fCls">标注</label>
+        <select class="select select-sm" id="fCls">
+          <option value="all">全部</option>
+          <option value="brake_pressed">刹车按下</option>
+          <option value="nitro_pressed">氮气按下</option>
+        </select>
+
+        <label class="field-label" for="fStatus">复核</label>
+        <select class="select select-sm" id="fStatus">
+          <option value="all">全部</option>
+          <option value="prelabel">未复核</option>
+          <option value="reviewed">已复核</option>
+        </select>
+
+        <label class="field-label" for="fLimit">每页</label>
+        <select class="select select-sm" id="fLimit">
+          <option value="12">12</option>
+          <option value="24" selected>24</option>
+          <option value="48">48</option>
+          <option value="96">96</option>
+        </select>
+
+        <input class="input input-sm" id="fSearch" type="search"
+               placeholder="文件名/视频名" style="width:150px" />
+
+        <label class="ds-check" title="对每一帧用「当前」判据重算一遍，和存下来的标注/信号对比">
+          <input type="checkbox" id="fRecheck" checked /> 重算对比
+        </label>
+        <label class="ds-check" title="只看「标注和当前判据不一致 / 框和标定对不上」的帧">
+          <input type="checkbox" id="fProblemOnly" /> 只看有问题的
+        </label>
+        <label class="ds-check" title="在缩略图上画 config.json 里的标定框（虚线）">
+          <input type="checkbox" id="fShowCalib" checked /> 显示标定框
+        </label>
+
+        <button class="btn btn-sm" id="fApply" type="button">应用 / 刷新</button>
+        <button class="btn btn-sm" id="fMarkPage" type="button"
+                title="把本页全部记成「已复核」—— 只记状态，不写标注文件">本页没问题</button>
+        <button class="btn btn-sm btn-ghost" id="fUndoMark" type="button"
+                title="撤销上一次「本页没问题 / 翻页自动记录」（只认最近一次）">撤销上次标记</button>
+      </div>
+
+      <p class="muted ds-legend">
+        <b>翻页即复核</b>：离开本页时，<b>你改过的帧</b>会写回标注文件、
+        <b>没改的帧</b>只记成「已复核」（<b>不碰标注内容</b>）—— 没错的帧不用逐个点。
+        <br>
+        缩略图上：<span class="lg lg-label">实线</span> = 数据集里的**标注框**；
+        <span class="lg lg-calib">虚线</span> = 当前 <code>config.json</code> 的**标定框**。
+        两者应当**完全重合** —— 不重合就是"数据集和标定不对应"
+        （这种帧<b>不会</b>被自动记成已复核，免得把问题"翻过去"）。
+        右边两张是按键框的放大图（判据真正读的像素）。
+      </p>
+
+      <div class="ds-grid" id="dsGrid"></div>
+
+      <div class="ds-pager" id="dsPager"></div>
+    </section>
+  </main>
+
+  <div class="lightbox hidden" id="lightbox" role="dialog" aria-modal="true" aria-label="放大查看">
+    <img class="lightbox-img" id="lightboxImg" alt="" />
+    <div class="lightbox-cap" id="lightboxCap"></div>
+  </div>
+
+  <script src="/static/dataset.js"></script>
+</body>
+</html>
