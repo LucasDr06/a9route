@@ -33,8 +33,8 @@ import threading
 from dataclasses import dataclass, field
 from pathlib import Path
 
-from a9route.train import modelcard
-from a9route.train.labels import CLASS_IDS, CLASSES
+from a9route import formats as modelcard
+from a9route.formats import CLASS_IDS, CLASSES
 
 #: 可用的后端名（`config.vision.key_backend` 的取值）
 BACKENDS = ("heuristic", "auto", "onnx", "ultralytics")
@@ -163,7 +163,7 @@ class HeuristicKeys(KeyDetector):
 
     * 默认 `mode="fine"` —— **逐字保持现状**，路线输出一个字节都不变；
     * 想试"按 NOTES 的结论统一"就设 `--set vision__key_heuristic_mode=cues`，
-      然后用 `a9route train pulses` 对比两边的动作数。
+      然后用 `a9lab pulses` 对比两边的动作数。
     """
 
     name = "heuristic"
@@ -219,7 +219,7 @@ class OnnxDetector:
     处理办法（**明确 + 可覆盖**）：
 
     * `fmt="auto"`（默认）：按 `列宽 == 4+nc` 判成**未做 NMS** ——
-      因为 `a9route train export` 导出的就是这种（**我们不传 `nms=True`**）；
+      因为 `a9lab export` 导出的就是这种（**我们不传 `nms=True`**）；
     * 如果你自己用 `nms=True` 导过，就把 `vision.key_fmt` 设成 `nms`
       （或给 `OnnxDetector(fmt="nms")`），别指望它自己认出来。
     """
@@ -245,8 +245,8 @@ class OnnxDetector:
         if not p.is_file():
             raise RuntimeError(
                 "找不到{0}模型：{1}\n{2}".format(
-                    what, p, hint or "  先训练并导出：a9route train run / "
-                                     "a9route train export"))
+                    what, p, hint or "  先训练并导出：a9lab run / "
+                                     "a9lab export"))
         self.model_path = p
         # ---- 模型清单：核对类序 + 跟随它自己的 imgsz（**换模型时最要紧的那道闸**）----
         self.card = modelcard.load(p)
@@ -501,8 +501,8 @@ def resolve_backend(cfg=None) -> tuple[str, str, dict]:
             raise RuntimeError(
                 "vision.key_backend=auto，但按键模型不存在：{0}\n"
                 "  现在是「判定必须交给模型」的配置 —— **不会**悄悄退回启发式。\n"
-                "  修法一（推荐）：a9route train export --name keys"
-                "  或  a9route train use <模型名>\n"
+                "  修法一（推荐）：a9lab export --name keys"
+                "  或  a9lab install <模型名>.onnx\n"
                 "  修法二（只用于调试/预标注）："
                 "a9route config set vision__key_backend=heuristic".format(model_path))
         backend = "onnx"
@@ -565,7 +565,7 @@ def describe_backend(cfg=None) -> str:
     `auto` 会**说清它到底选了哪个**；模型文件不存在时 `resolve_backend` 会抛
     （`auto` 不静默退回启发式），这里把那句话原样报出来，而不是含糊过去。
     """
-    from a9route.train.labels import CLASS_ZH
+    from a9route.formats import CLASS_ZH
 
     def _raw() -> str:
         """当前配置里那个**原始**取值（不传 cfg 时看 `config.current()` ——

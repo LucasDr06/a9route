@@ -24,9 +24,9 @@ pip install -e ".[model]"          # 运行时（含 onnxruntime）
 pip install -e ".[ocr,model]"
 
 # ② 自检：不需要设备、不需要网络、不需要录像
-a9route test all                   # 全量离线回归（当前 641 项，约 10 秒）
-a9route train doctor               # 看环境/模型/数据集各自的状态
+a9route test all                   # 全量离线回归（当前 260 项，约 5 秒）
 python tools/clean_env_check.py    # 确认「只装了运行依赖」的环境也能全绿（见下面「测试」）
+                                   # （数据集/模型的状态用另一个项目的 `a9lab doctor` 看）
 
 # ③ 放一段录像进去，然后分析
 copy 你的录像.mp4 output\
@@ -41,8 +41,7 @@ a9route serve                            # 或双击 serve.cmd -> http://127.0.0
 | 代码 + 文档 + 测试 | ✓ 全在 |
 | **两个训练好的模型** `models/keys.onnx` / `choice.onnx`（~23 MB） | ✓ 在（所以 clone 下来直接能分析） |
 | **跑图录像** | ✗ 自己录（`*.mp4` 不入库；放 `output/` 或设 `A9ROUTE_VIDEO_DIR`） |
-| **训练数据集** `datasets/`（含人工复核过的标注） | ✗ 几百 MB，不入库 —— 要自己 `train build` + 标注，见 `TRAINING.md` |
-| 训练产物 `models/runs/`、预训练权重 `models/weights/` | ✗ 不入库（`train fetch` 能重下 yolov8n.pt） |
+| **数据集 / 训练 / 标注** | ✗ **不在这个仓库** —— 在 `a9lab`（另一个项目） |
 | 你调好的参数 `config.json` | ✗ 本机私有 —— **但不需要它**：内置默认值就是调好的那套（`config.example.json` 只是格式示例） |
 
 > **环境要求**（硬性）：录像必须 **1280×720**、画面里有**完整的比赛 HUD**
@@ -54,18 +53,44 @@ a9route serve                            # 或双击 serve.cmd -> http://127.0.0
 |---|---|---|
 | 判什么 | 刹车 / 氮气**按键有没有按下** | 路标图标 + **哪个被选中** |
 | 类别 | `brake_pressed` / `nitro_pressed` | `choice_icon` / `choice_selected` |
-| 训练数据 | `datasets/keys`（1200 帧，人工复核 572） | `datasets/choice`（1200 帧，**全部人工复核**） |
+| 训练数据 | `a9lab` 的 `datasets/keys`（1200 帧，人工复核 572） | `a9lab` 的 `datasets/choice`（1200 帧，**全部人工复核**） |
 | mAP50 | **0.9748** | **0.9843**（`box_map` 0.851） |
 | 默认 conf | `0.40` | `0.30` |
 | 选路三个答案同时都对 | — | **0.990**（同一份数据上启发式是 0.9425） |
 | 训练时间 | 2026-09-15 16:06 | 2026-09-15 18:21 |
 
 同目录下的 `keys.json` / `choice.json` 是**模型清单**（类序 / imgsz / conf / 指标 / 训练时间），
-`train use` 和运行时都会**核对类别顺序** —— 把选路模型切给按键会直接拒绝，不会静默出错。
+运行时**核对类别顺序** —— 把选路模型切给按键会直接拒绝，不会静默出错。
+清单的形状和校验代码在 `a9route/formats.py`（它是两个项目之间的**契约**，
+`a9lab` 导出时写、这里加载时验）。
 
 ---
 
-## 为什么要单独做一个项目
+## 两个项目怎么分（2026-09-15 拆的）
+
+| | `a9route`（**本项目**） | `a9lab` |
+|---|---|---|
+| 干什么 | **录像 → 路线** | **数据集 → 模型** |
+| 依赖 | numpy / opencv / flask / onnxruntime（**不要 torch**） | 标注侧同上；训练侧要 torch+ultralytics |
+| 节奏 | 改判据、调参（分钟级） | 标数据、训模型（小时级） |
+| 谁依赖谁 | 不被任何东西依赖 | **依赖本项目**（标定 / 判据 / 检测器 / HUD 读数只有一份） |
+| 界面 | 跑图页 + 参数面板（`:8790`） | 工作台：概览 / 数据集 / 标注 / 体检 / 训练 / 模型（`:8791`） |
+
+**为什么这么分**：识别换成模型之后，"造数据集 + 训模型"变成了一条**独立的、要 GPU 的**流程，
+而运行时那边越轻越好（clone 下来只要有 onnxruntime 就能跑）。
+分完之后两边只通过两个**契约**打交道，而且各自都有校验：
+
+1. **模型清单** `models/<名字>.json`（类别顺序 / imgsz / conf / 指标）；
+2. **数据集在磁盘上的布局**（`a9lab` 自己管，运行时根本不读数据集）。
+
+> 为什么要强调"判据只有一份"：这个项目里真出过事故 —— 项目里同时存在**两套启发式口径**，
+> 结果一处按 A 口径预标注、另一处按 B 口径评估，**刹车召回凭空掉 35%**，
+> 看着像"模型大胜"，其实是两个入口不一致 ✗。所以搬到 `a9lab` 的那半边
+> **只调用**本项目的判据，不复制。
+
+---
+
+## 为什么要单独做一个项目（相对最早的原项目）
 
 这套东西原来长在 `asphalt9auto`（手机自动化：adb / 标定 / 手柄 / Web 控制台）里，
 但视频分析这条线**跟设备没关系**。分开的直接好处是**调参不用再跑整个项目**：
@@ -73,10 +98,10 @@ a9route serve                            # 或双击 serve.cmd -> http://127.0.0
 | | 原来 | 现在 |
 |---|---|---|
 | 改一个阈值 | 改 `a9auto/race/cues.py` 里的常量 | 网页「参数」弹窗拖滑块，或 `config.json` / `--set` / 环境变量 |
-| 验证改动 | 跑整个项目的全量回归 | `a9route test all`（641 项，约 10 秒，纯离线） |
+| 验证改动 | 跑整个项目的全量回归 | `a9route test all`（260 项，约 10 秒，纯离线） |
 
-搬迁时判据是逐字搬的，之后这一轮把**识别整体换成了模型**（按键 + 选路两条线），
-并把它们做得**可训练、可评估、可标注** —— 见下面「怎么训自己的模型」。
+搬迁时判据是逐字搬的，之后把**识别整体换成了模型**（按键 + 选路两条线），
+训练与数据那条线则**拆给了 `a9lab`**。
 
 ---
 
@@ -91,12 +116,11 @@ $py = "C:\Users\Admin\miniconda3\envs\alphash9auto\python.exe"   # 本机用的�
 
 # ② 起本地 Web 窗口（拖视频进去 -> 左边路线、右边逐百分点截图）
 & $py -m a9route serve           # http://127.0.0.1:8790/
-                                #   http://127.0.0.1:8790/dataset  ← 按键数据集：体检 / 逐帧对照
-                                #   http://127.0.0.1:8790/choice   ← **选路**数据集：三个选择题
                                 # 也可以直接双击根目录的 serve.cmd（= python main.py）
                                 # ⚠️ 服务就跑在**这个终端窗口的进程里**，窗口别关；Ctrl+C 停
                                 # 页面右上「参数」= **可编辑的判据参数**（滑块/数字框，
                                 # 保存即写进 config.json，下一次分析生效）
+                                # （数据集标注/体检是另一个项目 a9lab 的工作台，端口 8791）
 
 # ③ 只想对齐时间、自己填操作
 & $py -m a9route video output\跑图转路线测试.mp4
@@ -107,35 +131,39 @@ $py = "C:\Users\Admin\miniconda3\envs\alphash9auto\python.exe"   # 本机用的�
 # ⑤ 离线回归（不需要设备、不需要网络）
 & $py -m a9route test all
 
-# ⑥ 自己的模型：按键（刹车 / 氮气）
-& $py -m a9route train doctor                    # 先看环境能干什么
-& $py -m a9route train build output\*.mp4        # 抽帧 + 预标注（**默认用模型推**，见 §0.3）
-& $py -m a9route train split                     # 按视频划分 train/val（防数据泄漏）
-& $py -m a9route train audit                     # 数据集体检（标注↔标定↔判据）
-                                #   标定：http://127.0.0.1:8790/dataset
-& $py -m a9route train run --name keys           # 训练（要在有 torch 的环境里）
-& $py -m a9route train eval --name keys --weights models\keys.onnx   # 逐帧评估（并排打启发式对照）
-& $py -m a9route train export --name keys        # 导出 ONNX + 写模型清单
-& $py -m a9route train models                    # 看有哪些模型
-& $py -m a9route train use keys                  # 换模型（**核对类别顺序**，切错直接拒绝）
-
-# ⑦ **选路**也用 YOLO（另一套类别 / 另一个数据集 / 另一个界面）
-& $py -m a9route train choice-build --source keys   # 从按键数据集分类出来（硬链接，不占空间）
-& $py -m a9route train choice-stats                 # 看分布
-                                #   标定：http://127.0.0.1:8790/choice（三个选择题）
-& $py -m a9route train run --name choice            # 训练
-& $py -m a9route train export --name choice         # -> models/choice.onnx
-& $py -m a9route train use choice                   # 切运行时后端
-
-# ⑧ OCR 模型缓存（读不到时会读不出「路程 NN%」，路线就空了）
+# ⑥ OCR 模型缓存（读不到时会读不出「路程 NN%」，路线就空了）
 & $py -m a9route ocr status                      # 看能不能读到
 & $py -m a9route ocr cache                       # 抄一份到工作区（做一次即可）
 ```
 
-> **两个环境**（这是本机的情况，别人 clone 后按上面「clone 之后怎么跑」装即可）：
-> * `alphash9auto`（Python 3.12）：**运行 + 标注 + 评估** —— numpy / opencv / flask /
->   paddleocr / **onnxruntime**（不装 torch）；
-> * `ai_joy`（Python 3.9）：**训练/导出** —— torch 2.8.0+cu128 + ultralytics（RTX 50 系必须 cu128）。
+> **数据集与训练不在这个仓库里**（2026-09-15 拆出去了）。
+> 抽帧 / 标注 / 体检 / 训练 / 评估 / 导出 / 装模型都是另一个项目 **`a9lab`** 的活：
+>
+> ```powershell
+> a9lab serve                      # 网页工作台：概览 / 数据集 / 标注 / 体检 / 训练 / 模型
+> a9lab build 录像.mp4 --name v3   # 抽帧 + 预标注
+> a9lab label --name v3            # 标注（键盘驱动）
+> a9lab audit --name v3            # 体检：标注 ↔ 标定 ↔ 判据
+> a9lab run   --name v3            # 训练（要在有 torch 的环境里）
+> a9lab eval  --name v3            # 逐帧评估（**把像素判据当对照组**）
+> a9lab export --name v3           # 导出 ONNX + 模型清单
+> a9lab install v3.onnx            # 装回本项目（核对类别顺序 + 写本项目的配置）
+> ```
+>
+> 拆的理由：**这两件事的节奏完全不同**（改判据是分钟级、训模型是小时级），
+> 而且"数据集/训练"那半边要 torch + ultralytics（2.5 GB），
+> 运行时这边只要 onnxruntime（15 MB）。分完之后：
+> * 本项目 = **只跑路线**，依赖最轻，clone 下来就能用；
+> * `a9lab` = 数据与模型的实验室，**它依赖本项目**（标定、像素判据、检测器、HUD 读数
+>   都在这里，只有一份 —— 复制第二份必然漂移）；
+> * 两边之间只有两个契约：**模型清单**（`models/<名字>.json`，记着类别顺序）
+>   和**磁盘上的数据集布局**，各自都有校验。
+
+> **两个环境**（本机的情况）：
+> * `alphash9auto`（Python 3.12）：运行 —— numpy / opencv / flask / paddleocr / **onnxruntime**
+>   （**不装 torch**）；`a9lab` 的抽帧/标注/体检也在它里面跑；
+> * `ai_joy`（Python 3.9）：训练 —— torch 2.8.0+cu128 + ultralytics（RTX 50 系必须 cu128），
+>   那是 `a9lab` 的活。
 >
 > 依赖清单见 `pyproject.toml`（`pip install -e ".[model]"` / `".[ocr]"` / `".[train]"`）。
 > `python main.py` 与 `python -m a9route` 等价；**不带参数就是起 Web 窗口**。
@@ -144,13 +172,13 @@ $py = "C:\Users\Admin\miniconda3\envs\alphash9auto\python.exe"   # 本机用的�
 > 选路 `choice_backend=auto` → `models/choice.onnx`。
 > ⚠️ `auto` **不静默退回启发式**：模型文件不在就**报错**（这次分析无效，并告诉你
 > 怎么修），因为"看起来正常、其实是像素判据"的路线比报错更坏。
-> 想用启发式请**显式**设 `vision.key_backend=heuristic`（只用于调试/预标注）。
+> 想用启发式请**显式**设 `vision.key_backend=heuristic`（只用于调试/对照）。
 > 「路程 NN%」用 PaddleOCR；`360 / 漂移 / 双击氮气` 由**信号形状规则**推出
 > （`core/intent.py`，模型给的按键信号 + 用户定的规则）。
 >
-> **两个训好的模型（~23 MB）就在仓库里** —— clone 下来直接能跑 `analyze`；
-> 数据集（几百 MB、含人工标注）和训练产物（`models/runs/`，66 MB）不入库，
-> 见 `models/README.md`。**不用配 `config.json`**：内置默认值就是调好的那一套
+> **两个训好的模型（~23 MB）就在仓库里** —— clone 下来直接能跑 `analyze`。
+> 数据集（几百 MB、几千帧人工标注）和训练产物都在 `a9lab` 那边，不入库。
+> **不用配 `config.json`**：内置默认值就是调好的那一套
 > （实测：删掉 `config.json` 之后同一段视频跑出来的路线**一字不差**）。
 
 ### 录像要求
@@ -218,8 +246,8 @@ $env:A9ROUTE_scan__choice_idle_hold = "12"
 | `hud` | 比赛内读数框 | `progress_box`（**路程 NN%，路线百分比只认它**）、`rank_box`、`touchdrive_box`、`choice_band`（选路带，**模型出的路标只在带内才收**） |
 | `intent` | 信号形状 → 操作目的 | `tap_360_gap`（成对脉冲判 360）、`drift_min`（按住 vs 短脉冲）、`nitro_gap`、`nitro_hold` |
 
-> 训练那一侧的参数（数据集路径、`imgsz`、`epochs`、预标注来源…）**不在 `config.json` 里**，
-> 它们是 `train` 子命令的参数，见 `TRAINING.md`。
+> 训练那一侧的参数（抽帧预算、`imgsz`、`epochs`、预标注来源…）**不在这个 `config.json` 里** ——
+> 它们是 `a9lab` 的参数（`a9lab config list`，网页上在「设置」页）。
 
 **`scan.choice_idle_hold` 是这一轮新加的关键旋钮**：连续多少个采样点没有路标
 就把"这一段选路"关掉（默认 8，≈0.53 秒）。调小 → 一个岔路口会被拆成两段（多报）；
@@ -228,7 +256,7 @@ $env:A9ROUTE_scan__choice_idle_hold = "12"
 **调参不要凭感觉。** 每个默认值后面都写着实测数据（`config.py` 里有完整注释），例如：
 
 * 按键模型 `key_conf = 0.40`、选路模型 `choice_conf = 0.30` —— 都是
-  `train eval` 扫出来的最佳档，不是拍的；
+  `a9lab eval` 扫出来的最佳档，不是拍的；
 * 选路的闪烁闸 `choice_min_hold = 4`：不加它时，10 秒视频能报出 16 次选路（实测）；
 * 启发式那一支（只在 `backend=heuristic` 时用）：氮气键 `红占比 > 0.15`
   （实测"按下 0.36 / 没按 0.09"）、刹车键 `圈内白度 − 圈外参照白度 > 0.35`
@@ -240,8 +268,9 @@ $env:A9ROUTE_scan__choice_idle_hold = "12"
 `nitro_key_box=(1033,497,110,110)`（圆心 (200,552)/(1080,552) 半径 ≈50，
 关于屏幕中线 x=640 完全对称）；选路带 `hud.choice_band` 是屏幕上方那条。
 
-> ⚠️ 这两个按键框**现在只影响标注页怎么裁图/画框**（判定已经交给模型了）。
-> 改完记得跑 `a9route train audit` 看数据集里的标注还对不对得上。
+> ⚠️ 这两个按键框**运行时其实用不到了**（判定已经交给模型），但**还不能删**：
+> `a9lab` 的标注页要照它裁图、体检要照它判"标注和标定对不对得上"。
+> 改完记得跑 `a9lab audit --name <数据集>` 看标注还对不对得上。
 > 选路带 `choice_band` 则是**运行时真闸门**（带宽 ±24 px 之外的路标不算）。
 
 ### 换分辨率时怎么重量框
@@ -298,7 +327,7 @@ worktmp/analysis/<视频名>/
 ```
 
 注意头几行**是算出来的、不是写死的**：`<0.3s` 来自当前生效的 `intent.tap_360_gap`，
-`onnx:keys.onnx` 来自当前生效的后端 —— 你 `train use` 换了模型、
+`onnx:keys.onnx` 来自当前生效的后端 —— 你用 `a9lab install` 换了模型、
 或把 `tap_360_gap` 调成 0.4，路线文件里这几行会跟着变（以前这里是写死的常量，
 输出会一本正经地写错自己，已修）。
 
@@ -370,21 +399,20 @@ worktmp/analysis/<视频名>/
 a9route/
 ├── main.py                   # 根入口（= python -m a9route；**不带参数就是起 Web 窗口**）
 ├── serve.cmd                 # 双击 = 起 Web 窗口（本机用）
-├── config.example.json       # 本机调好的一份参数，copy 成 config.json 即可
+├── config.example.json       # 参数示例（copy 成 config.json 即可；不写就全用内置默认）
 ├── config.json               # （不存在就全用内置默认；**不入库**，本机私有）
 ├── README.md                 # 你正在看的这份
-├── TRAINING.md               # **模型怎么训**：要准备什么、怎么标、怎么评估、怎么切
-├── NOTES.md                  # 踩坑记录：判据怎么量出来的、哪些路走不通
+├── NOTES.md                  # 踩坑记录：判据怎么量出来的、哪些路走不通（**两个项目共同的历史**）
 ├── routes/                   # 路线样例：demo.txt（格式说明）+ user_beach_landing.txt
 │                             #   （用户真实路线，47 个条目 —— 测试里原样解析它）
 ├── tools/
 │   └── clean_env_check.py    # **验证 clone 流程**：屏蔽 .[train]/.[ocr] 依赖再跑一遍测试
-├── datasets/                 # （不入库、几百 MB）训练数据集：帧 + 人工复核过的标注
-├── models/                   # 运行时模型 keys.onnx / choice.onnx + 模型清单（**入库**）
-│                             #   runs/（训练产物）、weights/ 不入库，见 models/README.md
+├── models/                   # 运行时模型 keys.onnx / choice.onnx + 模型清单（**入库，~23 MB**）
+│                             #   训练产物 runs/、weights/ 都在 a9lab 那边，见 models/README.md
 ├── a9route/
 │   ├── cli.py                # 所有子命令
 │   ├── config.py             # **可调参数的唯一事实来源**（含实测注释）
+│   ├── formats.py            # **和模型之间的契约**：类别名 + 模型清单（读/校验）+ 选项范围
 │   ├── analysis.py           # 「视频 → 路线」的编排（CLI 与 Web 共用这一份）
 │   ├── paths.py              # 路径常量（不相对 CWD）
 │   ├── bootstrap.py          # Windows 中文控制台的 UTF-8 修复
@@ -393,31 +421,19 @@ a9route/
 │   │   └── intent.py         # 信号形状 → 操作目的（含**选路分段状态机**）
 │   ├── vision/
 │   │   ├── video.py          # 抽帧、时间轴、逐百分点截图、精细扫描、生成路线
-│   │   ├── cues.py           # 「一帧 → 现在在做什么」的启发式（预标注/对照用）
+│   │   ├── cues.py           # 「一帧 → 现在在做什么」的启发式（预标注/对照用，a9lab 也吃它）
 │   │   ├── keys.py           #   **通用 ONNX 检测器** + 按键四个后端：
 │   │   │                     #   auto / onnx / ultralytics / heuristic
 │   │   ├── choice.py         #   选路识别：图标 → (有没有岔路 / 几个 / 选第几个) + **带区闸**
 │   │   └── hud.py            # 一帧 → 比赛读数（路程 NN% / 排名 / 路标 / TOUCHDRIVE）
-│   ├── train/                # **YOLOv8 训练框架**（只有它 import torch）
-│   │   ├── labels.py         #   类别定义 + YOLO 标注读写 + data.yaml
-│   │   ├── choice.py         #   **选路这条线**：三个答案 ↔ 标注框、数据集分类、统计
-│   │   ├── frames.py         #   抽哪些帧（优先级采样：翻转帧/吵架/贴阈值/…）
-│   │   ├── prelabel.py       #   预标注（**默认用模型推**，也可退回启发式）
-│   │   ├── dataset.py        #   数据集构建 / **按视频划分** / 校验 / 统计
-│   │   ├── audit.py          #   **数据集体检**：标注 ↔ 标定 ↔ 判据 对不对得上
-│   │   ├── modelcard.py      #   **模型清单**（类序/imgsz/指标）+ 换模型的类序校验
-│   │   ├── review.py         #   复核页 + 导出修正 + 写回标注（**带任务守卫**）
-│   │   ├── runner.py         #   训练 / 逐帧评估 / 导出 ONNX / 整片脉冲对比
-│   │   └── doctor.py         #   环境与素材自检
 │   ├── ocr/reader.py         # PaddleOCR 懒加载 + **模型缓存的自动镜像**（见 NOTES §10.17）
 │   ├── web/                  # 本地窗口（Flask + 原生 JS，无构建步骤）
 │   │   ├── app.py            #   「跑图视频 → 路线」页 + `/api/*` + `/api/config`（参数面板）
 │   │   ├── config_ui.py      #   **参数编辑表**（29 项：范围/中文名/依赖哪个后端）
-│   │   ├── dataset.py        #   「数据集体检」页（`/dataset` + `/api/dataset/*`）
-│   │   ├── choice.py         #   **「选路标定」页**（`/choice` + `/api/choice/*`，和上面那页分开）
-│   │   ├── static/           #   app.js / dataset.js / choice.js / style.css
-│   │   └── templates/        #   index.html / dataset.html / choice.html
-│   └── tests/                # 离线回归 + fixtures（真帧样本）
+│   │   ├── static/           #   app.js / style.css
+│   │   └── templates/        #   index.html
+│   └── tests/                # 离线回归 + fixtures（真帧样本；a9lab 的测试也借它）
+└── （数据集 / 标注 / 训练 / 导出：全在另一个项目 **`a9lab`**）
 ```
 
 ---
@@ -438,14 +454,19 @@ a9route/
 | `test_intent` | 26 | 信号形状 → 目的（360 / 漂移 / 打断氮气 / 单击双击长按）+ **选路分段状态机**（四句话各一条，另加"空档还没到闸门不算结束""只闪一两帧的景色闪光不算选路""闸门可调"） |
 | `test_video` | 115 | 时间轴、抽帧真解码、窗口汇总、按键段、**真帧样本回归**、端到端一条龙、配置生效、**「只允许一个后端」**（含"粗扫不许偷偷用 HoughCircles"的反例）、带区闸、交叉校验、**路线头不许写错自己**（360 间隔/模型名跟着配置走） |
 | `test_webvideo` | 36 | Web 接口：上传、轮询、截图防目录穿越、路线下载、OCR 不可用时不崩 |
-| `test_train` | 423 | **训练框架（不需要 torch）**：YOLO 标注读写、`data.yaml`（**屏蔽 pyyaml 也要能写**）、抽帧优先级与预算、预标注、数据集构建/划分/校验、**数据集体检（含 5 个"故意弄坏"的反例）**、复核写回**任务守卫**、letterbox 几何、ONNX 输出解码、后端选择、体检页接口、**选路那条线**（三个答案 ↔ 标注框往返、数据集分类、模型清单认任务）、**Web 参数面板**（范围校验 + 落盘 + 当下是否生效） |
+| `test_config_ui` | 24 | **Web 参数面板**：范围/类型/未知键的校验（一项不合格就一项都不写）、落盘且**真的生效**、恢复默认要**把键删掉**、"当前后端下这一项生效吗"要标出来 |
+| `test_ocr` | 18 | OCR 模型缓存的**三态判定**（ok/missing/denied，且 `is_file()` 抛异常也不崩）、镜像进工作区、**一张图都没扫到要当错误报出来**（不是给一条空路线） |
+
+> 数据集/训练那一整套测试（435 项）在 **`a9lab`** 那边（`a9lab test all`）。
 
 > ⚠️ **T0 是一条语法闸门**：它把 `a9route/**/*.py` 全部编译一遍。
 > 加这条是因为我在中文双引号字符串里手滑写过 ASCII 引号、
 > 把整个模块搞成语法错误而没当场发现 —— 现在这种错**第一个就报**。
+> （搬代码那天也真是这么被抓到两次：中文引号、还有探针里的 `\U` 转义。）
 
 真帧样本在 `a9route/tests/fixtures/`（选路路标帧 + 刹车/氮气按键截图），
-都是当年在真实比赛画面里裁下来的，所以能抓住"框改歪了""模型换了"这类回归。
+都是当年在真实比赛画面里裁下来的，所以能抓住"框改歪了""模型换了"这类回归
+（`a9lab` 的测试也借它当输入素材 —— 那是"运行时长什么样"的事实来源）。
 测试会自己造一个临时 `config.json`（**不读你本机那份**），
 临时目录优先用系统临时区、不可写时退回 `worktmp/test_tmp` ——
 所以跑测试**不会污染**你调好的参数，也不会往仓库根目录丢文件。
@@ -462,9 +483,10 @@ README 里那句「`pip install -e ".[model]"` 之后 `test all` 全绿」很容
 
 （它会少跑 1 条：没装 pyyaml 时"产物能被 pyyaml 读回来"那一条自动跳过 —— 这是**允许**的。）
 
-已经靠它抓到一次：`train/labels.py` 曾经在函数开头无条件 `import yaml`，
-而 pyyaml 在 `.[train]` 里 —— 现在 `data.yaml` 是自己按 YAML 格式拼字符串
-（`labels._yaml_scalar`），`train doctor` 也不再把它列成"关键缺失"了。
+已经靠它抓到一次：`train/labels.py`（现在这套代码在 `a9lab` 里）曾经在函数开头无条件
+`import yaml`，而 pyyaml 在 `.[train]` 里 —— 现在 `data.yaml` 是自己按 YAML 格式拼字符串
+（`labels._yaml_scalar`），`a9lab doctor` 也不再把它列成"关键缺失"了。
+分家之后这条检查更简单了：本项目运行时只要 numpy/opencv/flask/onnxruntime。
 
 ---
 
@@ -490,7 +512,7 @@ README 里那句「`pip install -e ".[model]"` 之后 `test all` 全绿」很容
 * **"选路条目比实际多"**：这一条分两步修好的，**别把功劳都记在模型头上**：
   ① 用户口径的**分段状态机**（`core/intent.py`）先把"一个岔路口只留一个结论"做到 ——
   这段视频从 12 条降到 7 条，**两个后端都一样**（状态机与后端无关）；
-  ② 选路**模型**接着把"答案对不对"提上去 —— `train eval` 上「三个答案同时都对」
+  ② 选路**模型**接着把"答案对不对"提上去 —— `a9lab eval` 上「三个答案同时都对」
   **0.9425 → 0.990**，"有没有岔路口"的错法 **19 处 → 1 处**。
 
 > ⚠️ 但请注意：**上面的"正确答案"仍然是我用数据集的标注算出来的**，不是你在真机上核对过的。
@@ -500,9 +522,10 @@ README 里那句「`pip install -e ".[model]"` 之后 `test all` 全绿」很容
 
 * **只在 1280×720 的录像上验证过**。所有框（两个按键圆、选路带、HUD）都是这个分辨率量的；
   换分辨率必须重量框，见上面「换分辨率时怎么重量框」。
-* **训练数据的覆盖面就是它的天花板**：`datasets/keys` 1200 帧（复核过 572 帧）、
-  `datasets/choice` 1200 帧（全部复核）。**换赛道、换天空、换 HUD 皮肤**都可能掉点，
-  而掉点不会报错 —— 会安静地给出错路线。修法是**再录一段、`train build` 加进去重训**。
+* **训练数据的覆盖面就是模型的天花板**（那批数据在 `a9lab` 的 `datasets/`）：
+  `keys` 1200 帧（复核过 572 帧）、`choice` 1200 帧（全部复核）。
+  **换赛道、换天空、换 HUD 皮肤**都可能掉点，而掉点不会报错 —— 会安静地给出错路线。
+  修法是**再录一段、`a9lab build` 加进去重训**。
 * **选路带区闸是个取舍**：模型在带下方那些圆形 UI 上会误触发，所以只收
   `hud.choice_band ± 24 px` 内的检测。代价是**带外的真路标也会被丢弃**。
 * **`choice_idle_hold`（选路结束闸）没有万能值**：两个岔路口挨得很近时，
@@ -525,8 +548,8 @@ README 里那句「`pip install -e ".[model]"` 之后 `test all` 全绿」很容
 ## 附：搬迁时的改动（相对原项目，历史记录）
 
 > 这一节是**当时的记录**，读它不用为了用这个项目。
-> 那之后又发生了两件大事，看上面「已知限制」和 `TRAINING.md` 就行：
-> ① 识别从启发式**整体换成 YOLOv8 模型**；② 参数有了网页滑块面板。
+> 那之后又发生了三件大事：① 识别从启发式**整体换成 YOLOv8 模型**；
+> ② 参数有了网页滑块面板；③ **数据集/训练那半边拆给了 `a9lab`**（见上面「两个项目怎么分」）。
 > 下面那句"判据逐字未改"只对**搬迁那一刻**成立。
 
 **搬迁那一刻逻辑逐字未改**，改的只有三件事：

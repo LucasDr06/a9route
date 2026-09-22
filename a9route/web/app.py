@@ -22,7 +22,7 @@
 | GET  | `/api/route?job=` | 把该任务的完整路线文本下载下来 |
 
 数据集体检那几个接口在 `web/dataset.py`（Flask Blueprint），
-业务逻辑在 `train/audit.py`（CLI 的 `a9route train audit` 用同一份）。
+业务逻辑在 `train/audit.py`（CLI 的 `a9lab audit` 用同一份）。
 
 分析要跑几十秒，所以放**后台线程**、前端轮询 —— 进度靠"覆盖 N 个百分点"这句。
 """
@@ -54,13 +54,8 @@ def create_app() -> Flask:
     app.json.ensure_ascii = False
     paths.ensure_dirs()
 
-    # 数据集体检页面（/dataset + /api/dataset/*）—— 单独一个 Blueprint
-    from a9route.web.dataset import bp as dataset_bp
-    app.register_blueprint(dataset_bp)
-
-    # 选路标注页面（/choice + /api/choice/*）—— **和刹车/氮气那页分开**
-    from a9route.web.choice import bp as choice_bp
-    app.register_blueprint(choice_bp)
+    # ⚠️ 数据集/标注那两个页面（`/dataset`、`/choice`）**已经搬去 a9lab** 了 ——
+    # 它们属于"造数据集/标数据"那条线，不属于运行时。这个窗口只留跑图页 + 参数面板。
 
     jobs: dict[str, dict] = {}
     lock = threading.Lock()

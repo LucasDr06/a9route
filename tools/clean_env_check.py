@@ -42,9 +42,11 @@ BLOCKED = {
     "pytest",            # .[dev]
 }
 
+#: ⚠️ 数据集/训练那几个模块（曾经在这里的 `test_train`）**已经搬去 a9lab** 了，
+#: 所以本项目的"干净环境"只需要跑运行时这几个模块。
 MODULES = ["a9route.tests.test_route", "a9route.tests.test_intent",
            "a9route.tests.test_video", "a9route.tests.test_webvideo",
-           "a9route.tests.test_train"]
+           "a9route.tests.test_config_ui", "a9route.tests.test_ocr"]
 
 _real_import = builtins.__import__
 

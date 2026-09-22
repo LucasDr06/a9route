@@ -140,7 +140,7 @@ FIELDS: list[dict] = [
     {"key": "vision.brake_key_box", "group": "标定（位置框）",
      "zh": "刹车键框 x,y,w,h", "kind": "box",
      "min": 0, "max": 1280, "step": 1, "backend": None,
-     "hint": "改完跑 `a9route train audit` 看标注还对不对得上"},
+     "hint": "改完跑 `a9lab audit` 看标注还对不对得上"},
     {"key": "vision.nitro_key_box", "group": "标定（位置框）",
      "zh": "氮气键框 x,y,w,h", "kind": "box",
      "min": 0, "max": 1280, "step": 1, "backend": None, "hint": ""},

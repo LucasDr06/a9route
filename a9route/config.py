@@ -103,7 +103,7 @@ DEFAULTS: dict[str, dict] = {
         #: 选路模型的运行后端（和按键那套同样的规则，只是**另一套类别**）：
         #:   auto         **默认**：`models/choice.onnx` 在就用模型，不在就退回启发式
         #:   onnx / ultralytics / heuristic
-        #: 换模型：`a9route train models` / `a9route train use <名字>`
+        #: 换模型：`a9lab models` / `a9lab install <名字>.onnx`
         "choice_backend": "auto",
         #: 选路模型文件（空 = 用 models/choice.onnx）
         "choice_model": "",
@@ -141,7 +141,7 @@ DEFAULTS: dict[str, dict] = {
         #:   onnx         强制用模型（文件不在就报错，不偷偷降级）
         #:   ultralytics  直接用 .pt（要 torch；适合边训边试）
         #:   heuristic    只用 cv2/numpy 的启发式（和最初逐字一致）
-        #: 换模型：`a9route train models` 看有什么，`a9route train use <名字>` 切过去
+        #: 换模型：`a9lab models` 看有什么，`a9lab install <名字>.onnx` 切过去
         #: （切换时会**核对模型清单里的类别顺序**，类序反了直接拒绝启动）。
         "key_backend": "auto",
         #: 模型文件（空 = 用 models/keys.onnx）。`.onnx` 走 onnxruntime、`.pt` 走 ultralytics
@@ -161,7 +161,7 @@ DEFAULTS: dict[str, dict] = {
         #: **ONNX 输出形态**：auto / raw / nms
         #: 我们只有 2 类 -> `4+nc == 6`，而"已做 NMS"的导出行宽**也是 6**，
         #: 光看形状分不出来 ✗（猜错不报错，只会静默把坐标当分数用）。
-        #: `auto` 按"未做 NMS"解析（`a9route train export` 导出的就是这种，
+        #: `auto` 按"未做 NMS"解析（`a9lab export` 导出的就是这种，
         #: 我们**不传 nms=True**）；你要用 `nms=True` 导过，就设成 `nms`。
         "key_fmt": "auto",
         #: **启发式后端**用哪套口径（只有在 `key_backend=heuristic` 时有意义）：
@@ -172,7 +172,7 @@ DEFAULTS: dict[str, dict] = {
         #: 可 NOTES §1 实测的结论是"圈内判据对氮气没信号（按下 0.004），
         #: 并进来只会把误报抬高 ✗"。README 里「氮气偏多」那条已知问题，
         #: 至少有一部分是这儿来的。**默认不改**（路线输出一个字节不变），
-        #: 想验证就把这个设成 cues，再用 `a9route train pulses` 对比动作数。
+        #: 想验证就把这个设成 cues，再用 `a9lab pulses` 对比动作数。
         "key_heuristic_mode": "fine",
     },
 

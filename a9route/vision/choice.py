@@ -26,8 +26,8 @@ import threading
 from dataclasses import dataclass, field
 from pathlib import Path
 
-from a9route.train.choice import (CHOICE_CLASSES, CHOICE_ZH, MAX_OPTIONS,
-                                  MIN_OPTIONS, option_range)
+from a9route.formats import (CHOICE_CLASSES, CHOICE_ZH, MAX_OPTIONS,
+                             MIN_OPTIONS, option_range)
 
 #: 可用的后端名（`config.vision.choice_backend` 的取值）
 BACKENDS = ("heuristic", "auto", "onnx", "ultralytics")
@@ -149,10 +149,10 @@ class OnnxChoice:
             model, classes=CHOICE_CLASSES, imgsz=imgsz, conf=conf, iou=iou,
             provider=provider, anchor_tol=0.0, fmt=fmt, what="选路",
             hint="  先分类 + 复核 + 训练：\n"
-                 "    a9route train choice build      # 把现有数据分类\n"
-                 "    a9route train choice review     # 三个选择题（/choice 页面）\n"
-                 "    a9route train run --name choice\n"
-                 "    a9route train export --name choice\n"
+                 "    a9lab choice-build      # 把现有数据分类\n"
+                 "    a9lab label --name choice     # 三个选择题（/choice 页面）\n"
+                 "    a9lab run --name choice\n"
+                 "    a9lab export --name choice\n"
                  "  或者退回启发式：--set vision__choice_backend=heuristic")
         self.detail = self._det.detail
 
@@ -203,7 +203,7 @@ class UltralyticsChoice:
         if not p.is_file():
             raise RuntimeError(f"找不到模型文件：{p}")
         # 类序闸和 ONNX 那条路一样要过（顺序错了会把刹车/氮气式错位搬到选路上）
-        from a9route.train import modelcard as MC
+        from a9route import formats as MC
         err = MC.check_card(MC.load(p), CHOICE_CLASSES)
         if err:
             raise RuntimeError("模型不能用：\n  " + err)
@@ -283,8 +283,8 @@ def resolve_backend(cfg=None) -> tuple:
             raise RuntimeError(
                 "vision.choice_backend=auto，但选路模型不存在：{0}\n"
                 "  现在是「判定必须交给模型」的配置 —— **不会**悄悄退回 HoughCircles。\n"
-                "  修法一（推荐）：a9route train export --name choice"
-                "  或  a9route train use choice\n"
+                "  修法一（推荐）：a9lab export --name choice"
+                "  或  a9lab install choice.onnx\n"
                 "  修法二（只用于调试/预标注）："
                 "a9route config set vision__choice_backend=heuristic".format(model_path))
         backend = "onnx"

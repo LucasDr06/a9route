@@ -640,7 +640,7 @@ def scan_fine(path: str | Path, *, gap: float = 0.12, hold: int = 1,
 
     `keys=None` 时按 `config.vision.key_backend` 造一个（`vision.keys`）：
     默认 `heuristic` = **和以前逐字一致**；换成 `onnx`/`ultralytics`
-    就是"用 YOLOv8 模型识别刹车/氮气"（训练见 `a9route train`）。
+    就是"用 YOLOv8 模型识别刹车/氮气"（**训练在另一个项目 `a9lab` 里**，见它的 README）。
 
     ⚠️ 不传 `keys` 时用的 `cues.BRAKE_KEY_BOX` 等**模块级常量**由
     `a9route.config.apply()` 按 `config.json` 灌好 —— 所以本函数
@@ -1099,7 +1099,7 @@ def suggest_route(shots: list[PercentShot], *, timeline: Timeline | None = None,
             "  （顶部氮气槽青色、「漂移NN米」文字、「完成360度旋转」文字 —— "
             "那些都不参与判定）。\n"
             "  怎么修：① 确认 `analyze` 日志里有「精细扫描…」那一行；\n"
-            "          ② 确认两个模型都在：`a9route train models`"
+            "          ② 确认两个模型都在：`a9lab models`"
             "（按键 keys.onnx / 选路 choice.onnx）。")
     lines = [
         "# 由跑图视频**自动推断**的路线（判定全部来自模型，请核对后使用）",
