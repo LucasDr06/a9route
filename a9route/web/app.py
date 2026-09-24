@@ -180,6 +180,19 @@ def create_app() -> Flask:
             sets = parsed
 
         f = request.files.get("video")
+        # ⚠️ **同一个进程里只允许跑一个分析**（2026-09-24 加的）。
+        #    为什么：每个分析自己一份 PaddleOCR + 两份 ONNX，还各带一个解码线程和一个
+        #    按键细扫线程；同时跑两个会互相抢（OCR 返回空结果、显存/线程争用），
+        #    而表现是**"这次分析没扫到任何百分比"** —— 看起来像视频有问题 ✗。
+        #    这种"资源争用导致结果莫名其妙"最难查，所以宁可**明说**：
+        #    "已经有一个在跑，等它结束"（界面上一句话，比一堆玄学结果强）。
+        with lock:
+            running = [j for j in jobs.values() if j.get("state") == "running"]
+        if running:
+            return jsonify(
+                error="已经有一个分析在跑了（{0}）—— 同一个进程里同时跑两个会互相抢 "
+                      "OCR/模型，结果会莫名其妙。等它结束再拖，或另开一个窗口。"
+                      .format(running[0].get("name") or "未命名")), 409
         if f is not None:
             name = f.filename or "upload.mp4"
             jid = _new_job(name, Path(name))

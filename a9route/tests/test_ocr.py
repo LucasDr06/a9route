@@ -169,6 +169,81 @@ def t4_diagnosis_text():
             os.environ["PADDLE_PDX_CACHE_HOME"] = real_env
 
 
+def t5_no_shots_is_not_no_ops():
+    """**0 张截图 ≠ 「这一局没有操作」**（2026-09-24 用户拖进来一段录像真踩）。
+
+    那次现场：`route.txt` 里写着「这一局模型没判出任何操作 —— 所以正文是空的
+    （**不是**「没扫描成功」）」，而文件里一条明细行都没有 —— 那是**扫描失败**
+    （「路程 NN%」一个都没读到）。那句话**恰好说反了**，用户会跑去查按键/阈值 ✗✗。
+
+    这里锁三件事：
+      ① 空截图时不许说"没判出任何操作"；
+      ② **原因要写进 route.txt**（文件得能自己解释自己）；
+      ③ 诊断**不许只凭一两帧就冤枉视频** —— 抽 5 帧，读得到就明说"不是视频的问题"。
+    """
+    print("\n=== T5 0 张截图时的报告与诊断 ===")
+    from a9route.vision import video as V
+    from a9route.vision.video import PercentShot
+
+    txt = V.suggest_route([], fine_scan_ran=True)
+    check("**空截图 -> 说「扫描失败」**，不说「模型没判出任何操作」",
+          "没扫到" in txt and "模型没判出任何操作" not in txt,
+          txt.splitlines()[0][:60])
+    check("  也不再有那句说反了的话（不是「没扫描成功」）",
+          "不是「没扫描成功」" not in txt, "")
+    check("  正文是空的（不给路线）",
+          not [ln for ln in txt.splitlines() if ln.strip() and not ln.startswith("#")], "")
+
+    # 对照：**有截图但没操作**时，原来那句话仍然是对的（别把这条一起改坏）
+    shot = PercentShot(percent=5.0, t=1.0, path="", op="", cue=None)
+    txt2 = V.suggest_route([shot], fine_scan_ran=True)
+    check("  对照：有截图、没操作 -> 仍说「模型没判出任何操作」",
+          "模型没判出任何操作" in txt2, txt2.splitlines()[1][:60])
+
+    # 真跑一次：blocker 必须落进 route.txt（而不是一个空文件）
+    work = TMP / "no_shots_fix"
+    work.mkdir(parents=True, exist_ok=True)
+    saved_diag = analysis._diagnose_no_shots
+    analysis._diagnose_no_shots = lambda v: "测试原因：OCR 读不到模型"
+    try:
+        rep = analysis.analyze(fake_hud_video(work / "v.mp4", seconds=1.0, fps=10.0),
+                               out_dir=work / "out", with_buttons=True,
+                               detector=_NoShotsDetector(), progress=None)
+    finally:
+        analysis._diagnose_no_shots = saved_diag
+    rt = (work / "out" / "route.txt").read_text(encoding="utf-8")
+    check("这次分析带 blocker", bool(rep.blocker), rep.blocker.splitlines()[0][:40])
+    first = rep.blocker.splitlines()[0].strip()
+    check("**原因写进了 route.txt**（文件能自己解释自己）", bool(first) and first in rt,
+          "找 {0!r}".format(first[:40]))
+    check("  文件里明说「这次分析无效」", "这次分析无效" in rt, "")
+    check("  文件不是空的（空文件最难查）", len(rt.strip()) > 40, str(len(rt)))
+    check("  也没有「这一局没操作」那种误导话", "不是「没扫描成功」" not in rt, "")
+
+
+def t6_diagnosis_samples_many_frames():
+    """诊断要**抽 5 帧**，而不是只看一帧就下结论。
+
+    真踩过：用户那段录像在中点那一帧恰好读不到字，诊断就说
+    「这一帧可能正好在加载/回放画面 —— 换一段比赛中的录像」，
+    可**同一份文件重跑完全正常**（99 张截图）—— 把"这一次运行的问题"
+    说成了"你的视频有问题" ✗。现在抽查多帧；读得到就明说"不是视频的问题"。
+    """
+    print("\n=== T6 诊断抽 5 帧 ===")
+    import inspect
+
+    src = inspect.getsource(analysis._diagnose_no_shots)
+    # ⚠️ 只看**函数体**（docstring 里会引用旧文案，拿全文断言会误报 —— 真踩过）
+    body = src.split('"""')[-1]
+    check("源码里写的是**多帧**抽样（不是只看 `n // 2`）",
+          "n // 2" not in body and "0.05" in body and "0.85" in body, "")
+    check("  读得到时明说「不是视频的问题」", "不是视频的问题" in body, "")
+    check("  读得到时给出的建议是「重跑」，不是「换一段录像」",
+          "重跑" in body and "换一段比赛中的录像" not in body, "")
+    check("  读不到时才提 progress_box / 分辨率",
+          "progress_box" in body and "1280" in body, "")
+
+
 def main() -> int:
     global TMP
     TMP = tmp_dir()
@@ -176,6 +251,8 @@ def main() -> int:
     t2_cache_mirror()
     t3_no_shots_blocker()
     t4_diagnosis_text()
+    t5_no_shots_is_not_no_ops()
+    t6_diagnosis_samples_many_frames()
     return summary("test_ocr")
 
 

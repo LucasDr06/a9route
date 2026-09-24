@@ -99,6 +99,24 @@ class AnalysisReport:
                 f"按键细扫 {self.button_events} 个动作, {self.intents} 个操作目的")
 
 
+def _with_blocker(route_text: str, blocker: str) -> str:
+    """把"这次分析为什么无效"**写进 route.txt**（追加成注释块）。
+
+    为什么要这么做（2026-09-24 真踩）：用户从网页拖进来一段录像，扫出 0 张截图，
+    而报告里写着「这一局模型没判出任何操作 —— 所以正文是空的（不是「没扫描成功」）」；
+    真实原因是**百分比一个都没读到**。事后只能靠"文件里没有明细"倒推 ——
+    因为真正的原因（blocker）只在控制台和界面上闪过一次。
+
+    文件是最容易被翻出来、也最容易被发给别人的东西 —— 它必须能**自己解释自己**。
+    """
+    if not blocker:
+        return route_text
+    lines = ["", "# ---- ⚠️ 这次分析无效（**不是**「这一局没有操作」）----"]
+    lines += ["#   " + ln for ln in blocker.splitlines()]
+    lines.append("#   （上面这段也会原样出现在命令行输出和网页的红框里）")
+    return route_text.rstrip("\n") + "\n" + "\n".join(lines) + "\n"
+
+
 def _diagnose_no_shots(video: Path) -> str:
     """**一张百分点截图都没扫到**时，查清楚到底为什么，并给一句能照做的话。
 
@@ -109,6 +127,12 @@ def _diagnose_no_shots(video: Path) -> str:
     实际根因跟"检测"毫无关系：`~/.paddlex` 在工作区外，受限环境**读不到 OCR 模型**
     → `RaceReader.percent` 恒为 `None` → 粗扫一张图都存不下 → 路线空。
     而当时只打了两句温和的 warning，看起来就像"这视频里没有操作" ✗✗。
+
+    ⚠️ **只看"中点那一帧"是不行的**（2026-09-24 又踩一次）：用户那段录像在中点那一帧
+    恰好读不到字，于是诊断断言"这一帧可能正好在加载/回放画面 —— 换一段比赛中的录像"。
+    可**同一份文件重跑完全正常**（99 张截图）—— 等于把"这一次运行的问题"
+    说成了"你的视频有问题"，用户会白折腾 ✗。现在改成**抽 5 帧**看整体：
+    文件本身读得到，就明说"不是视频的问题，重跑就行"。
 
     **永远不抛异常**（它本身是错误路径上的诊断）。
     """
@@ -129,41 +153,64 @@ def _diagnose_no_shots(video: Path) -> str:
             f"     修法（在**普通终端**里跑一次即可）：a9route ocr cache\n"
             f"     之后 PaddleOCR 会把模型从工作区内那一份加载，受限环境也能用。")
 
-    # 缓存没问题 -> 真的在视频上试一次，把 OCR 自己的报错拿出来
+    # 缓存没问题 -> 在视频上**抽 5 帧**试，把"到底能不能读"和 OCR 自己的报错摊开
+    samples = []                                       # [(位置比例, 文本, 错误, 秒)]
     try:
         import cv2
+
+        from a9route import config as _cfg
+        from a9route.ocr.reader import OcrReader
+
         cap = cv2.VideoCapture(str(video))
         n = int(cap.get(cv2.CAP_PROP_FRAME_COUNT) or 0)
-        if n > 30:
-            cap.set(cv2.CAP_PROP_POS_FRAMES, n // 2)
-        ok, frame = cap.read()
-        cap.release()
-        if not ok or frame is None:
+        fps = float(cap.get(cv2.CAP_PROP_FPS) or 30.0)
+        if n <= 0:
+            cap.release()
             return "视频解不出帧（文件坏了，或编码不支持）。"
-        from a9route.ocr.reader import OcrReader
-        from a9route import config as _cfg
         h = (_cfg.load_config() or {}).get("hud", {})
         box = h.get("progress_box") or [140, 58, 260, 44]
         x, y, w, hh = (int(v) for v in box)
-        crop = frame[y:y + hh, x:x + w]
         o = OcrReader()
-        texts = o.read(crop)
-        if o.last_error:
-            return ("OCR 起来了但在这一帧上读失败：{0}\n"
-                    "     这一帧可能正好在加载/回放画面 ——"
-                    "先用 --max-seconds 30 试跑，或换一段比赛中的录像。"
-                    .format(o.last_error))
-        if not texts:
-            return ("OCR 能跑，但在**视频中点那一帧**读不到任何文字。\n"
-                    "     多半是这一帧不在比赛画面里（加载/结算），"
-                    "或者「路程 NN%」不在 progress_box 里。\n"
-                    "     确认：录像要是 1280×720，且左上角有「路程 NN%」。")
-        return ("OCR 读到了文字 {0!r}，但整段视频都没解析出百分比。\n"
-                "     可能是判据框位置不对（换个分辨率的录像？）——"
-                "`a9route config list hud` 看 progress_box。"
-                .format([t for t, _ in texts][:4]))
+        for frac in (0.05, 0.25, 0.45, 0.65, 0.85):
+            idx = int(n * frac)
+            cap.set(cv2.CAP_PROP_POS_FRAMES, idx)
+            ok, frame = cap.read()
+            if not ok or frame is None:
+                samples.append((frac, [], "解不出这一帧", idx / fps if fps else 0.0))
+                continue
+            texts = o.read(frame[y:y + hh, x:x + w])
+            samples.append((frac, [t for t, _ in texts], o.last_error or "",
+                            idx / fps if fps else 0.0))
+        cap.release()
     except Exception as exc:                           # noqa: BLE001
-        return (f"诊断时出错：{type(exc).__name__}: {exc}")
+        return f"诊断时出错：{type(exc).__name__}: {exc}"
+
+    ok_samples = [s for s in samples if s[1]]
+    detail = "；".join(
+        "{0:.0%}处(t={1:.1f}s) {2}".format(
+            s[0], s[3],
+            ("读到 " + repr(s[1][:2])) if s[1] else ("没读到（" + (s[2] or "空") + "）"))
+        for s in samples)
+
+    if ok_samples:
+        # ★ 文件本身读得到 —— **别把锅甩给视频**
+        return (
+            "**这一次运行没读到任何「路程 NN%」，但视频本身是读得到的**"
+            "（抽查 {0}/{1} 帧有字）。\n"
+            "     抽查：{2}\n"
+            "     结论：**不是视频的问题** —— 更像这一次运行出了问题"
+            "（例如 OCR 刚加载/并发状态下返回了空结果）。\n"
+            "     **直接重跑一次**通常就好；如果每次都这样，把这段文字连同"
+            " `worktmp/analysis/` 里那个任务目录一起留下来。"
+            .format(len(ok_samples), len(samples), detail))
+    return (
+        "**抽查的 {0} 帧里，「路程 NN%」那一块一个字都读不到。**\n"
+        "     抽查：{1}\n"
+        "     可能的原因：① 这一段录像基本都在加载/回放/结算画面（没有比赛 HUD）；\n"
+        "               ② 录像不是 1280×720，或「路上 NN%」不在 progress_box 里。\n"
+        "     怎么查：`a9route config list hud` 看 progress_box；"
+        "或先用 `--max-seconds 30` 只跑一小段。"
+        .format(len(samples), detail))
 
 
 def analyze(video: str | Path, *, out_dir: str | Path | None = None,
@@ -233,7 +280,8 @@ def analyze(video: str | Path, *, out_dir: str | Path | None = None,
         )
         rep.blocker = str(exc)
         rep.warnings.append("这次分析**无效**：判定必须来自模型，而模型起不来")
-        (out_dir / "route.txt").write_text("", encoding="utf-8")
+        (out_dir / "route.txt").write_text(_with_blocker("", rep.blocker),
+                                           encoding="utf-8")
         if progress:
             progress("  ⚠️ " + rep.blocker.replace("\n", "\n  "))
         return rep
@@ -254,7 +302,11 @@ def analyze(video: str | Path, *, out_dir: str | Path | None = None,
         )
         rep.blocker = str(exc)
         rep.warnings.append("这次分析**无效**（没有模型判出的操作，不给路线）")
-        (out_dir / "route.txt").write_text("", encoding="utf-8")
+        # ⚠️ **不要写空文件**：空 route.txt 是最难查的一种状态 ——
+        #    "文件在、但是空的"，看不出是"没操作"还是"根本没跑成"。
+        #    把原因写成注释放进去（`_with_blocker` 干这个），文件自己就能解释自己。
+        (out_dir / "route.txt").write_text(_with_blocker("", rep.blocker),
+                                           encoding="utf-8")
         if progress:
             progress("  ⚠️ " + rep.blocker.replace("\n", "\n  "))
         return rep
@@ -275,6 +327,10 @@ def analyze(video: str | Path, *, out_dir: str | Path | None = None,
     if not shots:
         rep.blocker = _diagnose_no_shots(video)
         rep.warnings.append("这次分析**无效**（没扫到任何百分比）：见下面的原因")
+        # ⚠️ **把原因写进 route.txt**：文件是会被人翻出来看的（这次排查就是靠它还原现场）。
+        #    只把 blocker 放在 API 响应/控制台里的话，磁盘上就留下一份
+        #    **声称自己没事的报告** —— 那比没有报告更坏 ✗
+        route_text = _with_blocker(route_text, rep.blocker)
     # ⚠️ 这里原来只看 `n_btn`（`s.buttons`），而 `s.buttons` **只有旧的
     # `vision.attach_events()` 那条路会填**；现在的主线（`extract_per_percent`）
     # 填的是 `s.intents`。于是 `n_btn` 恒为 0 —— 哪怕精细扫描明明判出了几十个操作，

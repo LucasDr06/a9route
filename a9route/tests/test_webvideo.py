@@ -24,13 +24,17 @@ TMP = Path(".")
 
 
 # ---------------------------------------------------------------- 假检测器
-def _install_fake_detector(percent_per_frame: float = 4.0, choice_at=(4, 8)):
+def _install_fake_detector(percent_per_frame: float = 4.0, choice_at=(4, 8),
+                           delay: float = 0.0):
     """把 `cues.CueDetector` 换成"按帧号给百分比 + 偶尔按键"的假货。
 
     为什么必须注入：真判据要 OCR 读「路程 NN%」，而 OCR 在受限沙箱里读不到模型
     （`~/.paddlex` 在工作区外）—— 那是环境限制，不是代码问题。
     这里锁的是**Web 这条编排链**（上传/后台线程/轮询/截图/路线），
     所以把"看画面"这一步换成确定的假货，让测试与 OCR 环境无关 ✓。
+
+    `delay`：每帧睡一下，用来把分析**拖慢**（测"同时只允许一个分析"那条路时
+    需要一个还在 running 的任务，否则第二个请求到达时它早跑完了）。
 
     注意：它会**覆盖模块里的类**，所以调用方必须负责还原（见 `main()` 的 finally）。
     """
@@ -44,6 +48,8 @@ def _install_fake_detector(percent_per_frame: float = 4.0, choice_at=(4, 8)):
             pass
 
         def detect(self, frame):
+            if delay:
+                time.sleep(delay)
             i = state["i"]
             state["i"] += 1
             cue = cues.Cue()
@@ -137,6 +143,28 @@ def _run_all() -> int:
 
     # ------------------------------------------------------------ T3
     print("\n=== T3 一条龙：analyze -> 轮询 -> 路线 + 截图 ===")
+    # ⚠️ **同一个进程里第二个分析要被挡住**（2026-09-24 加的）：
+    #    每个分析各自一份 PaddleOCR + 两份 ONNX + 解码/细扫两个线程，
+    #    同时跑两个会互相抢，而表现是"这次分析没扫到任何百分比"——
+    #    看起来像视频坏了 ✗。所以先起一个**慢**的（假检测器让它慢慢跑），
+    #    在它 running 的时候再发一个，必须拿到 409 + 一句人话。
+    slow_orig = _install_fake_detector(percent_per_frame=1.0, delay=0.25)
+    try:
+        r_busy = client.post("/api/analyze", json={"path": str(video), "every": 0.25})
+        check("（先起一个分析）200", r_busy.status_code == 200, str(r_busy.status_code))
+        jid_busy = (r_busy.get_json() or {}).get("job", "")
+        r2 = client.post("/api/analyze", json={"path": str(video), "every": 0.25})
+        check("**同时再起一个 -> 409**（不是默默再开一份）",
+              r2.status_code == 409, str(r2.status_code))
+        msg = (r2.get_json() or {}).get("error", "")
+        check("  而且说清了为什么（会互相抢 OCR/模型）",
+              "已经有一个分析在跑" in msg and "抢" in msg, msg[:70])
+        _wait(client, jid_busy)                       # 等它跑完，别影响后面的用例
+    finally:
+        from a9route.vision import cues as _cues
+
+        _cues.CueDetector = slow_orig
+
     r = client.post("/api/analyze", json={"path": str(video), "every": 0.25})
     check("POST /api/analyze 200", r.status_code == 200, str(r.status_code))
     body = r.get_json() or {}
